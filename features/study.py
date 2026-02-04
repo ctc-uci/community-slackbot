@@ -54,17 +54,120 @@ def _build_full_text(session):
     return base
 
 def _clean_expired_sessions(client=None):
-    """Remove expired sessions and unpin their messages if client is provided."""
+    """Remove expired sessions and send 5-min reminders if client is provided."""
     now = time.time()
     expired = [sid for sid, s in active_sessions.items() if s["end_ts"] < now]
+
+    # Remove expired sessions
     for sid in expired:
         s = active_sessions[sid]
-        if client and s.get("channel_id") and s.get("message_ts"):
+        channel_id = s.get("channel_id")
+        message_ts = s.get("message_ts")
+        if client and channel_id and message_ts:
             try:
-                client.pins_remove(channel=s["channel_id"], timestamp=s["message_ts"])
+                client.pins_remove(channel=channel_id, timestamp=message_ts)
             except Exception:
                 pass
         del active_sessions[sid]
+
+    # Send 5-min reminders
+    for sid, session in active_sessions.items():
+        time_left = session["end_ts"] - now
+        if client and not session.get("reminder_sent") and 0 < time_left <= 360:  # 5 mins
+            try:
+                client.chat_postEphemeral(
+                    channel=session["channel_id"],
+                    user=session["user_id"],
+                    text=f"⏰ Your study session at *{session['location']}* ends in 5 minutes. Extend your time?",
+                    blocks=[
+                        {"type": "section", "text": {"type": "mrkdwn", "text": f"⏰ Your study session at *{session['location']}* ends in 5 minutes. Extend your time?"}},
+                        {
+                            "type": "actions",
+                            "block_id": "study_extend_actions",
+                            "elements": [
+                                {"type": "button", "text": {"type": "plain_text", "text": "Extend 30 mins"}, "action_id": "study_extend_30", "value": sid},
+                                {"type": "button", "text": {"type": "plain_text", "text": "Extend 1 hour"}, "action_id": "study_extend_60", "value": sid},
+                            ],
+                        },
+                    ],
+                )
+                session["reminder_sent"] = True
+            except Exception:
+                pass
+
+
+def _extend_session(client, sid, minutes, response_url=None):
+    """Extend the session by X minutes and update the original announcement."""
+    if sid not in active_sessions:
+        return
+    session = active_sessions[sid]
+    session["end_ts"] += minutes * 60  # extend in seconds
+
+    # Recalculate time range for the announcement
+    end_dt = datetime.fromtimestamp(session["end_ts"], tz=TIMEZONE)
+    start_str = session["time_range"].split("–")[0].strip()
+    end_str = end_dt.strftime("%-I:%M %p") if os.name != "nt" else end_dt.strftime("%I:%M %p")
+    session["time_range"] = f"{start_str} – {end_str}"
+
+    user_id = session["user_id"]
+    channel_id = session["channel_id"]
+    message_ts = session["message_ts"]
+
+    # Update the original announcement message
+    if channel_id and message_ts:
+        blocks = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": _build_announcement_text(session)},
+            }
+        ]
+        if session.get("description"):
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"_{session['description']}_"},
+            })
+        if session.get("image_url"):
+            blocks.append({"type": "divider"})
+            blocks.append({
+                "type": "image",
+                "image_url": session["image_url"],
+                "alt_text": f"Study spot photo from {session.get('user_name','')}",
+                "block_id": "study_image_block",
+            })
+        blocks.append({
+            "type": "actions",
+            "block_id": "study_join_actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "🙋 Join"},
+                    "action_id": "study_join",
+                    "value": sid,
+                }
+            ],
+        })
+
+        client.chat_update(
+            channel=channel_id,
+            ts=message_ts,
+            text=_build_announcement_text(session),
+            blocks=blocks,
+        )
+
+    # ✅ Update ephemeral confirmation using response_url
+    if response_url:
+        confirm_text = f"✅ Your study session at *{session['location']}* has been extended by {minutes} minutes."
+        requests.post(response_url, json={
+            "replace_original": True,
+            "text": confirm_text,
+            "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": confirm_text}}
+            ]
+        })
+
+    # Reset reminder so it could remind again 5 mins before the new end time
+    session["reminder_sent"] = False
+
 
 
 def _get_user_session(user_id):
@@ -83,11 +186,12 @@ def _expiry_cleanup_loop():
         return
     client = WebClient(token=token)
     while True:
-        time.sleep(60)
         try:
             _clean_expired_sessions(client)
         except Exception:
             pass
+        time.sleep(60)
+
 
 
 def _build_study_modal_blocks(other_location_value=None):
@@ -408,8 +512,12 @@ def register_study_handlers(app):
             "end_ts": end_ts,
             "image_url": image_url,
             "participants": [user_id] + list(selected_user_ids),
-            "description": description,   # ← add this
+            "description": description,
+            "channel_id": channel_id,
+            "message_ts": None,  # will be set after posting
+            "reminder_sent": False,  # <-- initialize
         }
+
 
 
 
@@ -495,6 +603,20 @@ def register_study_handlers(app):
                     },
                 ],
             )
+
+    @app.action("study_extend_30")
+    def handle_extend_30(ack, body, client):
+        ack()
+        sid = body["actions"][0]["value"]
+        response_url = body.get("response_url")
+        _extend_session(client, sid, 30, response_url)
+
+    @app.action("study_extend_60")
+    def handle_extend_60(ack, body, client):
+        ack()
+        sid = body["actions"][0]["value"]
+        response_url = body.get("response_url")
+        _extend_session(client, sid, 60, response_url)
 
 
     def _update_message_cancelled(client, channel_id, message_ts, session):

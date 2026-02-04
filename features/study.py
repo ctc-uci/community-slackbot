@@ -194,40 +194,68 @@ def _expiry_cleanup_loop():
 
 
 
-def _build_study_modal_blocks(other_location_value=None):
-    location_options = [
-        {"text": {"type": "plain_text", "text": loc}, "value": loc}
-        for loc in UCI_LOCATIONS
-    ]
+def _build_study_modal_blocks(session_data=None):
+    """
+    Build Slack modal blocks for creating or editing a study session.
+    If session_data is provided, prefill fields with previous values.
+    """
+    location_options = [{"text": {"type": "plain_text", "text": loc}, "value": loc} for loc in UCI_LOCATIONS]
     hour_options = [{"text": {"type": "plain_text", "text": str(h)}, "value": str(h)} for h in range(1, 13)]
-    minute_options = [
-        {"text": {"type": "plain_text", "text": f"{m:02d}"}, "value": str(m)}
-        for m in range(60)
-    ]
-    ampm_options = [
-        {"text": {"type": "plain_text", "text": "AM"}, "value": "AM"},
-        {"text": {"type": "plain_text", "text": "PM"}, "value": "PM"},
-    ]
+    minute_options = [{"text": {"type": "plain_text", "text": f"{m:02d}"}, "value": str(m)} for m in range(60)]
+    ampm_options = [{"text": {"type": "plain_text", "text": t}, "value": t} for t in ["AM", "PM"]]
 
-    # Prefill start time = now, end time = now + 1 hour (same minutes)
+    # Defaults
     now = datetime.now(TIMEZONE)
-    end_default = now + timedelta(hours=1)
+    start_dt = now
+    end_dt = now + timedelta(hours=1)
+    location_value = None
+    other_location_value = None
+    description_value = ""
+    participants_value = []
 
-    # Start
-    start_hour_12 = now.hour % 12 or 12
-    start_minute = now.minute
-    start_ampm = "AM" if now.hour < 12 else "PM"
+    if session_data:
+        # Extract location and "Other" if needed
+        full_location = session_data.get("location", "")
+        if "—" in full_location:
+            location_value, other_location_value = [s.strip() for s in full_location.split("—", 1)]
+        elif full_location in UCI_LOCATIONS:
+            location_value = full_location
+        else:
+            location_value = "Other"
+            other_location_value = full_location
 
-    start_hour_initial = {"text": {"type": "plain_text", "text": str(start_hour_12)}, "value": str(start_hour_12)}
+        # Description
+        description_value = session_data.get("description", "")
+
+        # Participants (exclude owner)
+        participants_value = [uid for uid in session_data.get("participants", []) if uid != session_data.get("user_id")]
+
+        # Parse start/end times from time_range
+        time_range = session_data.get("time_range", "")
+        try:
+            start_str, end_str = [s.strip() for s in time_range.split("–")]
+            start_dt = datetime.strptime(start_str, "%I:%M %p").replace(year=now.year, month=now.month, day=now.day)
+            end_dt = datetime.strptime(end_str, "%I:%M %p").replace(year=now.year, month=now.month, day=now.day)
+            if end_dt <= start_dt:
+                end_dt += timedelta(days=1)
+        except Exception:
+            start_dt = now
+            end_dt = now + timedelta(hours=1)
+
+    # Convert to 12-hour display for dropdowns
+    def _to_12h(dt):
+        h12 = dt.hour % 12 or 12
+        ampm = "AM" if dt.hour < 12 else "PM"
+        return h12, dt.minute, ampm
+
+    start_hour, start_minute, start_ampm = _to_12h(start_dt)
+    end_hour, end_minute, end_ampm = _to_12h(end_dt)
+
+    start_hour_initial = {"text": {"type": "plain_text", "text": str(start_hour)}, "value": str(start_hour)}
     start_minute_initial = {"text": {"type": "plain_text", "text": f"{start_minute:02d}"}, "value": str(start_minute)}
     start_ampm_initial = {"text": {"type": "plain_text", "text": start_ampm}, "value": start_ampm}
 
-    # End = +1 hour, same minute
-    end_hour_12 = end_default.hour % 12 or 12
-    end_minute = end_default.minute
-    end_ampm = "AM" if end_default.hour < 12 else "PM"
-
-    end_hour_initial = {"text": {"type": "plain_text", "text": str(end_hour_12)}, "value": str(end_hour_12)}
+    end_hour_initial = {"text": {"type": "plain_text", "text": str(end_hour)}, "value": str(end_hour)}
     end_minute_initial = {"text": {"type": "plain_text", "text": f"{end_minute:02d}"}, "value": str(end_minute)}
     end_ampm_initial = {"text": {"type": "plain_text", "text": end_ampm}, "value": end_ampm}
 
@@ -240,6 +268,7 @@ def _build_study_modal_blocks(other_location_value=None):
                 "action_id": "location_select",
                 "placeholder": {"type": "plain_text", "text": "Where are you studying?"},
                 "options": location_options,
+                **({"initial_option": {"text": {"type": "plain_text", "text": location_value}, "value": location_value}} if location_value else {})
             },
             "label": {"type": "plain_text", "text": "Location"},
         },
@@ -263,6 +292,7 @@ def _build_study_modal_blocks(other_location_value=None):
                 "type": "multi_users_select",
                 "action_id": "studying_with_input",
                 "placeholder": {"type": "plain_text", "text": "Tag people studying with you"},
+                **({"initial_users": participants_value} if participants_value else {})
             },
             "label": {"type": "plain_text", "text": "Studying with"},
         },
@@ -275,46 +305,18 @@ def _build_study_modal_blocks(other_location_value=None):
                 "action_id": "description_input",
                 "placeholder": {"type": "plain_text", "text": "e.g. Studying for CS161, feel free to join!"},
                 "multiline": True,
+                "initial_value": description_value,
             },
             "label": {"type": "plain_text", "text": "Description"},
-        },
-        {
-            "type": "input",
-            "block_id": "image_block",
-            "optional": True,
-            "element": {
-                "type": "file_input",
-                "action_id": "image_input",
-                "filetypes": ["png", "jpg", "jpeg", "gif", "webp"],
-            },
-            "label": {"type": "plain_text", "text": "Share a photo to show your study spot"},
         },
         {"type": "header", "block_id": "start_time_header", "text": {"type": "plain_text", "text": "Start time", "emoji": True}},
         {
             "type": "actions",
             "block_id": "start_time_actions",
             "elements": [
-                {
-                    "type": "static_select",
-                    "action_id": "start_hour_input",
-                    "placeholder": {"type": "plain_text", "text": "Hour"},
-                    "options": hour_options,
-                    "initial_option": start_hour_initial,
-                },
-                {
-                    "type": "static_select",
-                    "action_id": "start_minute_input",
-                    "placeholder": {"type": "plain_text", "text": "Min"},
-                    "options": minute_options,
-                    "initial_option": start_minute_initial,
-                },
-                {
-                    "type": "static_select",
-                    "action_id": "start_ampm_input",
-                    "placeholder": {"type": "plain_text", "text": "AM/PM"},
-                    "options": ampm_options,
-                    "initial_option": start_ampm_initial,
-                },
+                {"type": "static_select", "action_id": "start_hour_input", "options": hour_options, "initial_option": start_hour_initial},
+                {"type": "static_select", "action_id": "start_minute_input", "options": minute_options, "initial_option": start_minute_initial},
+                {"type": "static_select", "action_id": "start_ampm_input", "options": ampm_options, "initial_option": start_ampm_initial},
             ],
         },
         {"type": "header", "block_id": "end_time_header", "text": {"type": "plain_text", "text": "End time", "emoji": True}},
@@ -322,31 +324,17 @@ def _build_study_modal_blocks(other_location_value=None):
             "type": "actions",
             "block_id": "end_time_actions",
             "elements": [
-                {
-                    "type": "static_select",
-                    "action_id": "end_hour_input",
-                    "placeholder": {"type": "plain_text", "text": "Hour"},
-                    "options": hour_options,
-                    "initial_option": end_hour_initial,
-                },
-                {
-                    "type": "static_select",
-                    "action_id": "end_minute_input",
-                    "placeholder": {"type": "plain_text", "text": "Min"},
-                    "options": minute_options,
-                    "initial_option": end_minute_initial,
-                },
-                {
-                    "type": "static_select",
-                    "action_id": "end_ampm_input",
-                    "placeholder": {"type": "plain_text", "text": "AM/PM"},
-                    "options": ampm_options,
-                    "initial_option": end_ampm_initial,
-                },
+                {"type": "static_select", "action_id": "end_hour_input", "options": hour_options, "initial_option": end_hour_initial},
+                {"type": "static_select", "action_id": "end_minute_input", "options": minute_options, "initial_option": end_minute_initial},
+                {"type": "static_select", "action_id": "end_ampm_input", "options": ampm_options, "initial_option": end_ampm_initial},
             ],
         },
     ]
+
     return blocks
+
+
+
 
 
 def register_study_handlers(app):
@@ -424,9 +412,13 @@ def register_study_handlers(app):
     def handle_study_modal_submit(ack, body, client, view):
         ack()
         _clean_expired_sessions(client)
+
         user_id = body["user"]["id"]
         user_name = body["user"].get("name", "Someone")
 
+        # ------------------------
+        # Extract form inputs
+        # ------------------------
         location_block = view["state"]["values"]["location_block"]
         location = location_block["location_select"]["selected_option"]["value"]
 
@@ -441,9 +433,6 @@ def register_study_handlers(app):
         studying_with_block = view["state"]["values"].get("studying_with_block") or {}
         studying_with_obj = studying_with_block.get("studying_with_input") or {}
         selected_user_ids = studying_with_obj.get("selected_users") or []
-        with_suffix = ""
-        if selected_user_ids:
-            with_suffix = " with " + " ".join(f"<@{uid}>" for uid in selected_user_ids) + " "
 
         description_block = view["state"]["values"].get("description_block") or {}
         description_raw = (description_block.get("description_input") or {}).get("value") or ""
@@ -456,17 +445,12 @@ def register_study_handlers(app):
         image_url = None
         if image_files and len(image_files) > 0:
             file_data = image_files[0]
-            # The file data from modal already contains permalink_public and url_private
             permalink_public = file_data.get("permalink_public")
             url_private = file_data.get("url_private")
             if permalink_public and url_private:
-                # Extract the pub_secret from permalink_public and construct direct URL
-                # permalink_public format: https://slack-files.com/TEAM-FILE-PUBSECRET
-                # We need to use the url_private with ?pub_secret=PUBSECRET
                 pub_secret = permalink_public.split("-")[-1] if "-" in permalink_public else None
                 if pub_secret:
                     image_url = f"{url_private}?pub_secret={pub_secret}"
-            print(f"[DEBUG] final image_url: {image_url}")
 
         def _get_select(block_id, action_id, default=None):
             obj = (view["state"]["values"].get(block_id) or {}).get(action_id) or {}
@@ -498,11 +482,56 @@ def register_study_handlers(app):
             end_dt += timedelta(days=1)
         end_ts = end_dt.timestamp()
 
-        session_id = str(uuid.uuid4())
-        channel_id = STUDY_CHANNEL_ID
         start_str = start_dt.strftime("%-I:%M %p") if os.name != "nt" else start_dt.strftime("%I:%M %p")
         end_str = end_dt.strftime("%-I:%M %p") if os.name != "nt" else end_dt.strftime("%I:%M %p")
         time_range = f"{start_str} – {end_str}"
+
+        # ------------------------
+        # Check if editing existing session
+        # ------------------------
+        session_id = view.get("private_metadata")
+        if session_id and session_id in active_sessions:
+            # Update existing session
+            session = active_sessions[session_id]
+            session.update({
+                "location": location,
+                "description": description,
+                "image_url": image_url,
+                "participants": [user_id] + list(selected_user_ids),
+                "time_range": time_range,
+                "end_ts": end_ts,
+                "reminder_sent": False
+            })
+            # Update original message
+            if session.get("channel_id") and session.get("message_ts"):
+                blocks = [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": _build_announcement_text(session)}}
+                ]
+                if description:
+                    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"_{description}_"}})
+                if image_url:
+                    blocks.append({"type": "divider"})
+                    blocks.append({"type": "image", "image_url": image_url, "alt_text": f"Study spot photo from {user_name}", "block_id": "study_image_block"})
+                blocks.append({
+                    "type": "actions",
+                    "block_id": "study_join_actions",
+                    "elements": [
+                        {"type": "button", "text": {"type": "plain_text", "text": "🙋 Join"}, "action_id": "study_join", "value": session_id}
+                    ]
+                })
+                client.chat_update(
+                    channel=session["channel_id"],
+                    ts=session["message_ts"],
+                    text=_build_announcement_text(session),
+                    blocks=blocks
+                )
+            return  # exit after updating
+
+        # ------------------------
+        # Otherwise, create a new session
+        # ------------------------
+        session_id = str(uuid.uuid4())
+        channel_id = STUDY_CHANNEL_ID
 
         active_sessions[session_id] = {
             "user_id": user_id,
@@ -514,95 +543,68 @@ def register_study_handlers(app):
             "participants": [user_id] + list(selected_user_ids),
             "description": description,
             "channel_id": channel_id,
-            "message_ts": None,  # will be set after posting
-            "reminder_sent": False,  # <-- initialize
+            "message_ts": None,
+            "reminder_sent": False,
         }
 
+        # Post announcement
+        msg_text = _build_announcement_text(active_sessions[session_id])
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": msg_text}}]
+        if description:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"_{description}_"}})
+        if image_url:
+            blocks.append({"type": "divider"})
+            blocks.append({"type": "image", "image_url": image_url, "alt_text": f"Study spot photo from {user_name}", "block_id": "study_image_block"})
+        blocks.append({
+            "type": "actions",
+            "block_id": "study_join_actions",
+            "elements": [
+                {"type": "button", "text": {"type": "plain_text", "text": "🙋 Join"}, "action_id": "study_join", "value": session_id}
+            ]
+        })
 
+        result = client.chat_postMessage(channel=channel_id, text=msg_text, blocks=blocks)
+        active_sessions[session_id]["message_ts"] = result["ts"]
 
+        # Pin the message
+        try:
+            client.pins_add(channel=channel_id, timestamp=result["ts"])
+        except Exception:
+            pass
 
-        if not channel_id:
-            channel_id = client.conversations_open(users=[user_id])["channel"]["id"]
-            msg = (
-                f"✅ You're now listed as studying at *{location}* *{time_range}*. "
-                "Set `STUDY_CHANNEL_ID` in your app config to announce to a channel."
-            )
-            if description:
-                msg += f"\n_{description}_"
-            client.chat_postMessage(channel=channel_id, text=msg)
-        else:
-            msg = _build_announcement_text(active_sessions[session_id])
-
-            blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": msg}}]
-            if description:
-                blocks.append({
+        # Ephemeral Cancel/Edit message for the author
+        client.chat_postEphemeral(
+            channel=channel_id,
+            user=user_id,
+            text="Manage your study announcement",
+            blocks=[
+                {
                     "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"_{description}_"},
-                })
-            if image_url:
-                blocks.append({"type": "divider"})
-                blocks.append({
-                    "type": "image",
-                    "image_url": image_url,
-                    "alt_text": f"Study spot photo from {user_name}",
-                    "block_id": "study_image_block",
-                })
+                    "text": {"type": "mrkdwn", "text": "You can cancel or edit your study announcement:"}
+                },
+                {
+                    "type": "actions",
+                    "block_id": "study_ephemeral_actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Cancel announcement"},
+                            "action_id": "study_cancel",
+                            "value": session_id,
+                            "style": "danger"
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Edit announcement"},
+                            "action_id": "study_edit",
+                            "value": session_id,
+                            "style": "primary"
+                        }
+                    ]
+                }
+            ]
+        )
 
-            blocks.append({
-                "type": "actions",
-                "block_id": "study_join_actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "🙋 Join"},
-                        "action_id": "study_join",
-                        "value": session_id,
-                    }
-                ],
-            })
-
-            full_text = f"{msg}\n_{description}_" if description else msg
-            if image_url:
-                full_text += f"\nPhoto attached"
-            result = client.chat_postMessage(
-                channel=channel_id,
-                text=full_text,
-                blocks=blocks,
-            )
-
-            active_sessions[session_id]["channel_id"] = channel_id
-            active_sessions[session_id]["message_ts"] = result["ts"]
-
-            # Pin the message first
-            try:
-                client.pins_add(channel=channel_id, timestamp=result["ts"])
-            except Exception:
-                pass
-
-            # Ephemeral message: only the author sees the Cancel button
-            client.chat_postEphemeral(
-                channel=channel_id,
-                user=user_id,
-                text="Cancel your study announcement",
-                blocks=[
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": "Cancel your study announcement?"},
-                    },
-                    {
-                        "type": "actions",
-                        "block_id": "study_cancel_ephemeral_actions",
-                        "elements": [
-                            {
-                                "type": "button",
-                                "text": {"type": "plain_text", "text": "Cancel announcement"},
-                                "action_id": "study_cancel",
-                                "value": session_id,
-                            },
-                        ],
-                    },
-                ],
-            )
 
     @app.action("study_extend_30")
     def handle_extend_30(ack, body, client):
@@ -691,12 +693,32 @@ def register_study_handlers(app):
         response_url = body.get("response_url")
         if response_url:
             requests.post(response_url, json={
-                "replace_original": True,  # this replaces the ephemeral message
-                "text": "✅ Cancelled. Use `/study` again to share a new location.",
+                "replace_original": True,
+                "text": "What would you like to do?",
                 "blocks": [
                     {
                         "type": "section",
-                        "text": {"type": "mrkdwn", "text": "✅ Cancelled. Use `/study` again to share a new location."}
+                        "text": {"type": "mrkdwn", "text": "✅ Your study announcement was cancelled. You can cancel it or edit it:"}
+                    },
+                    {
+                        "type": "actions",
+                        "block_id": "study_ephemeral_actions",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "Cancel announcement"},
+                                "action_id": "study_cancel",
+                                "value": session_id,
+                                "style": "danger"
+                            },
+                            {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "Edit announcement"},
+                                "action_id": "study_edit",
+                                "value": session_id,
+                                "style": "primary"
+                            }
+                        ]
                     }
                 ]
             })
@@ -793,6 +815,31 @@ def register_study_handlers(app):
             ts=session["message_ts"],
             text=full_text,
             blocks=blocks,
+        )
+
+    @app.action("study_edit")
+    def handle_study_edit(ack, body, client):
+        ack()
+        session_id = body["actions"][0]["value"]
+        if session_id not in active_sessions:
+            return
+        session = active_sessions[session_id]
+
+        trigger_id = body.get("trigger_id")
+        if not trigger_id:
+            return
+
+        # Build modal blocks prefilled with current session info
+        client.views_open(
+            trigger_id=trigger_id,
+            view={
+                "type": "modal",
+                "callback_id": "study_modal",
+                "title": {"type": "plain_text", "text": "Edit study location"},
+                "submit": {"type": "plain_text", "text": "Update"},
+                "private_metadata": session_id,  # so we know which session to update
+                "blocks": _build_study_modal_blocks(session_data=session)
+            }
         )
 
 

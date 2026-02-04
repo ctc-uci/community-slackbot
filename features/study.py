@@ -4,6 +4,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+import requests
 
 from slack_sdk import WebClient
 import pytz
@@ -301,7 +302,6 @@ def register_study_handlers(app):
         except Exception as e:
             logger.exception("Failed to open /study modal: %s", e)
             raise
-
     # Ack block_actions from time/AM-PM dropdowns in the study modal (no-op, state is in view_submission)
     def _ack_modal_select(ack):
         ack()
@@ -461,12 +461,16 @@ def register_study_handlers(app):
                 text=full_text,
                 blocks=blocks,
             )
+
             active_sessions[session_id]["channel_id"] = channel_id
             active_sessions[session_id]["message_ts"] = result["ts"]
+
+            # Pin the message first
             try:
                 client.pins_add(channel=channel_id, timestamp=result["ts"])
             except Exception:
                 pass
+
             # Ephemeral message: only the author sees the Cancel button
             client.chat_postEphemeral(
                 channel=channel_id,
@@ -491,6 +495,7 @@ def register_study_handlers(app):
                     },
                 ],
             )
+
 
     def _update_message_cancelled(client, channel_id, message_ts, session):
         full_text = _build_full_text(session)
@@ -542,30 +547,38 @@ def register_study_handlers(app):
                 text="Cancelled. Use `/study` again to share a new location.",
             )
 
+    
     @app.action("study_cancel")
     def handle_study_cancel(ack, body, client):
         ack()
         session_id = body["actions"][0]["value"]
-        # Button may be on ephemeral message; use session to find the channel announcement
+
+        # Cancel the session
         if session_id in active_sessions:
-            session = active_sessions[session_id]
+            session = active_sessions.pop(session_id)
             channel_id = session.get("channel_id")
             message_ts = session.get("message_ts")
-            del active_sessions[session_id]
             if channel_id and message_ts:
                 _update_message_cancelled(client, channel_id, message_ts, session)
                 try:
                     client.pins_remove(channel=channel_id, timestamp=message_ts)
                 except Exception:
                     pass
-            # Confirm to the user (they see this in the ephemeral thread)
-            user_id = session.get("user_id")
-            if user_id and body.get("channel", {}).get("id"):
-                client.chat_postEphemeral(
-                    channel=body["channel"]["id"],
-                    user=user_id,
-                    text="Cancelled. Use `/study` again to share a new location.",
-                )
+
+        # ✅ Update ephemeral message via response_url
+        response_url = body.get("response_url")
+        if response_url:
+            requests.post(response_url, json={
+                "replace_original": True,  # this replaces the ephemeral message
+                "text": "✅ Cancelled. Use `/study` again to share a new location.",
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": "✅ Cancelled. Use `/study` again to share a new location."}
+                    }
+                ]
+            })
+
 
     @app.event("member_joined_channel")
     def handle_member_joined_channel(event, client, logger):

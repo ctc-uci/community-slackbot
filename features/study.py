@@ -309,6 +309,17 @@ def _build_study_modal_blocks(session_data=None):
             },
             "label": {"type": "plain_text", "text": "Description"},
         },
+        {
+            "type": "input",
+            "block_id": "image_block",
+            "optional": True,
+            "element": {
+                "type": "file_input",
+                "action_id": "image_input",
+                "filetypes": ["png", "jpg", "jpeg", "gif", "webp"],
+            },
+            "label": {"type": "plain_text", "text": "Share a photo to show your study spot"},
+        },
         {"type": "header", "block_id": "start_time_header", "text": {"type": "plain_text", "text": "Start time", "emoji": True}},
         {
             "type": "actions",
@@ -443,7 +454,12 @@ def register_study_handlers(app):
         image_obj = image_block.get("image_input") or {}
         image_files = image_obj.get("files") or []
         image_url = None
+        image_block = view["state"]["values"].get("image_block") or {}
+        image_obj = image_block.get("image_input") or {}
+        image_files = image_obj.get("files") or []
+
         if image_files and len(image_files) > 0:
+            # New file uploaded
             file_data = image_files[0]
             permalink_public = file_data.get("permalink_public")
             url_private = file_data.get("url_private")
@@ -451,6 +467,11 @@ def register_study_handlers(app):
                 pub_secret = permalink_public.split("-")[-1] if "-" in permalink_public else None
                 if pub_secret:
                     image_url = f"{url_private}?pub_secret={pub_secret}"
+        else:
+            # No new file uploaded: preserve existing image if editing
+            session_id = view.get("private_metadata")
+            if session_id and session_id in active_sessions:
+                image_url = active_sessions[session_id].get("image_url")
 
         def _get_select(block_id, action_id, default=None):
             obj = (view["state"]["values"].get(block_id) or {}).get(action_id) or {}

@@ -103,20 +103,29 @@ def _build_study_modal_blocks(other_location_value=None):
         {"text": {"type": "plain_text", "text": "AM"}, "value": "AM"},
         {"text": {"type": "plain_text", "text": "PM"}, "value": "PM"},
     ]
-    # Prefill start time with current time; end time with next full hour
+
+    # Prefill start time = now, end time = now + 1 hour (same minutes)
     now = datetime.now(TIMEZONE)
+    end_default = now + timedelta(hours=1)
+
+    # Start
     start_hour_12 = now.hour % 12 or 12
     start_minute = now.minute
     start_ampm = "AM" if now.hour < 12 else "PM"
+
     start_hour_initial = {"text": {"type": "plain_text", "text": str(start_hour_12)}, "value": str(start_hour_12)}
     start_minute_initial = {"text": {"type": "plain_text", "text": f"{start_minute:02d}"}, "value": str(start_minute)}
     start_ampm_initial = {"text": {"type": "plain_text", "text": start_ampm}, "value": start_ampm}
-    next_hour_24 = (now.hour + 1) % 24
-    end_hour_12 = next_hour_24 % 12 or 12
-    end_ampm = "AM" if next_hour_24 < 12 else "PM"
+
+    # End = +1 hour, same minute
+    end_hour_12 = end_default.hour % 12 or 12
+    end_minute = end_default.minute
+    end_ampm = "AM" if end_default.hour < 12 else "PM"
+
     end_hour_initial = {"text": {"type": "plain_text", "text": str(end_hour_12)}, "value": str(end_hour_12)}
-    end_minute_initial = {"text": {"type": "plain_text", "text": "00"}, "value": "0"}
+    end_minute_initial = {"text": {"type": "plain_text", "text": f"{end_minute:02d}"}, "value": str(end_minute)}
     end_ampm_initial = {"text": {"type": "plain_text", "text": end_ampm}, "value": end_ampm}
+
     blocks = [
         {
             "type": "input",

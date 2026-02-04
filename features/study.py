@@ -12,8 +12,8 @@ import pytz
 # Channel where announcements are posted
 # Use TEST_CHANNEL_ID if ENV is "development", otherwise use the hardcoded channel
 
-# STUDY_CHANNEL_ID = "C0ACQP6P3T2"
-STUDY_CHANNEL_ID = os.environ.get("TEST_CHANNEL_ID")
+STUDY_CHANNEL_ID = "C0ACQP6P3T2"
+# STUDY_CHANNEL_ID = os.environ.get("TEST_CHANNEL_ID")
 
 
 # Set your timezone here (e.g., 'America/Los_Angeles', 'America/New_York', 'America/Chicago')

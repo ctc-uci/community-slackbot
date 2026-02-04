@@ -11,7 +11,9 @@ import pytz
 # Channel where announcements are posted
 # Use TEST_CHANNEL_ID if ENV is "development", otherwise use the hardcoded channel
 
-STUDY_CHANNEL_ID = "C0ACQP6P3T2"
+# STUDY_CHANNEL_ID = "C0ACQP6P3T2"
+STUDY_CHANNEL_ID = os.environ.get("TEST_CHANNEL_ID")
+
 
 # Set your timezone here (e.g., 'America/Los_Angeles', 'America/New_York', 'America/Chicago')
 TIMEZONE = pytz.timezone(os.environ.get("TZ", "America/Los_Angeles"))
@@ -31,6 +33,24 @@ UCI_LOCATIONS = [
 # session_id -> { user_id, user_name, location, end_ts }
 active_sessions = {}
 
+def _build_announcement_text(session):
+    names = session["participants"]
+    with_suffix = ""
+    if len(names) > 1:
+        with_suffix = " with " + " ".join(f"<@{uid}>" for uid in names[1:])
+
+    return (
+        f"📍 <@{names[0]}> is studying at *{session['location']}*"
+        f"{with_suffix} *{session['time_range']}*."
+    )
+
+def _build_full_text(session):
+    base = _build_announcement_text(session)
+    if session.get("description"):
+        base += f"\n_{session['description']}_"
+    if session.get("image_url"):
+        base += "\nPhoto attached"
+    return base
 
 def _clean_expired_sessions(client=None):
     """Remove expired sessions and unpin their messages if client is provided."""
@@ -375,9 +395,14 @@ def register_study_handlers(app):
             "user_id": user_id,
             "user_name": user_name,
             "location": location,
+            "time_range": time_range,
             "end_ts": end_ts,
             "image_url": image_url,
+            "participants": [user_id] + list(selected_user_ids),
+            "description": description,   # ← add this
         }
+
+
 
         if not channel_id:
             channel_id = client.conversations_open(users=[user_id])["channel"]["id"]
@@ -389,9 +414,8 @@ def register_study_handlers(app):
                 msg += f"\n_{description}_"
             client.chat_postMessage(channel=channel_id, text=msg)
         else:
-            msg = (
-                f"📍 <@{user_id}> is studying at *{location}*{with_suffix} *{time_range}*."
-            )
+            msg = _build_announcement_text(active_sessions[session_id])
+
             blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": msg}}]
             if description:
                 blocks.append({
@@ -406,6 +430,20 @@ def register_study_handlers(app):
                     "alt_text": f"Study spot photo from {user_name}",
                     "block_id": "study_image_block",
                 })
+
+            blocks.append({
+                "type": "actions",
+                "block_id": "study_join_actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "🙋 Join"},
+                        "action_id": "study_join",
+                        "value": session_id,
+                    }
+                ],
+            })
+
             full_text = f"{msg}\n_{description}_" if description else msg
             if image_url:
                 full_text += f"\nPhoto attached"
@@ -416,7 +454,6 @@ def register_study_handlers(app):
             )
             active_sessions[session_id]["channel_id"] = channel_id
             active_sessions[session_id]["message_ts"] = result["ts"]
-            active_sessions[session_id]["message_text"] = full_text
             try:
                 client.pins_add(channel=channel_id, timestamp=result["ts"])
             except Exception:
@@ -446,21 +483,22 @@ def register_study_handlers(app):
                 ],
             )
 
-    def _update_message_cancelled(client, channel_id, message_ts, original_text):
-        # Use proper Slack markdown for strikethrough: ~text~
-        # Split the text and apply strikethrough to each line
-        lines = original_text.split('\n')
-        strikethrough_lines = [f"~{line}~" for line in lines]
-        cancelled_text = "\n".join(strikethrough_lines) + " — Cancelled"
+    def _update_message_cancelled(client, channel_id, message_ts, session):
+        full_text = _build_full_text(session)
+
+        # Slack strikethrough per line
+        lines = full_text.split("\n")
+        cancelled = "\n".join(f"~{l}~" for l in lines) + " — Cancelled"
+
         client.chat_update(
             channel=channel_id,
             ts=message_ts,
-            text=cancelled_text,
+            text=cancelled,
             blocks=[
                 {
                     "type": "section",
-                    "text": {"type": "mrkdwn", "text": cancelled_text},
-                },
+                    "text": {"type": "mrkdwn", "text": cancelled},
+                }
             ],
         )
 
@@ -473,11 +511,10 @@ def register_study_handlers(app):
         session = active_sessions[session_id]
         channel_id = session.get("channel_id")
         message_ts = session.get("message_ts")
-        message_text = session.get("message_text", "")
         user_id = session["user_id"]
         del active_sessions[session_id]
         if channel_id and message_ts:
-            _update_message_cancelled(client, channel_id, message_ts, message_text)
+            _update_message_cancelled(client, channel_id, message_ts, session)
             try:
                 client.pins_remove(channel=channel_id, timestamp=message_ts)
             except Exception:
@@ -505,10 +542,9 @@ def register_study_handlers(app):
             session = active_sessions[session_id]
             channel_id = session.get("channel_id")
             message_ts = session.get("message_ts")
-            message_text = session.get("message_text", "")
             del active_sessions[session_id]
             if channel_id and message_ts:
-                _update_message_cancelled(client, channel_id, message_ts, message_text)
+                _update_message_cancelled(client, channel_id, message_ts, session)
                 try:
                     client.pins_remove(channel=channel_id, timestamp=message_ts)
                 except Exception:
@@ -554,6 +590,69 @@ def register_study_handlers(app):
     def handle_app_mention(event, client):
         """Handle when the bot is mentioned."""
         pass
+
+    @app.action("study_join")
+    def handle_study_join(ack, body, client):
+        ack()
+
+        user_id = body["user"]["id"]
+        session_id = body["actions"][0]["value"]
+
+        if session_id not in active_sessions:
+            return
+
+        session = active_sessions[session_id]
+
+        if user_id not in session["participants"]:
+            session["participants"].append(user_id)
+        # session["participants"].append(user_id)
+
+        full_text = _build_full_text(session)
+
+        blocks = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": _build_announcement_text(session)},
+            }
+        ]
+
+        if session.get("description"):
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"_{session['description']}_"},
+            })
+
+        if session.get("image_url"):
+            blocks.append({"type": "divider"})
+            blocks.append({
+                "type": "image",
+                "image_url": session["image_url"],
+                "alt_text": f"Study spot photo from {session.get('user_name','')}",
+                "block_id": "study_image_block",
+            })
+
+        blocks.append({
+            "type": "actions",
+            "block_id": "study_join_actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "🙋 Join"},
+                    "action_id": "study_join",
+                    "value": session_id,
+                }
+            ],
+        })
+
+        client.chat_update(
+            channel=session["channel_id"],
+            ts=session["message_ts"],
+            text=full_text,
+            blocks=blocks,
+        )
+
+
+
 
     # Start background thread to unpin expired sessions every 60s
     t = threading.Thread(target=_expiry_cleanup_loop, daemon=True)

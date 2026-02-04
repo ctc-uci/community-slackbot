@@ -1,5 +1,12 @@
-slack-bolt
-slack-cli-hooks<1.0.0
-python-dotenv
-watchdog
-pytz
+certifi==2026.1.4
+charset-normalizer==3.4.4
+idna==3.11
+packaging==25.0
+python-dotenv==1.2.1
+pytz==2025.2
+requests==2.32.5
+slack_bolt==1.27.0
+slack_cli_hooks==0.2.0
+slack_sdk==3.39.0
+urllib3==2.6.3
+watchdog==6.0.0

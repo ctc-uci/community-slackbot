@@ -4,6 +4,8 @@ env*/
 features/__pycache__
 __pycache__/
 .env
+firebase-credentials.json
+service-account*.json
 # macOS
 .DS_Store
 

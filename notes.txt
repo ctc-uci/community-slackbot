@@ -1,0 +1,8 @@
+GMAIL API:
+slack bot that filters emails sent to a given email that users can subscribe to
+
+users can run the command /subscribe to subscribe to and add emails to subscribe to
+
+use gmail api to listen on the desired email (ctc-uci@gmail.com i think). if it receives an email that someone subscribes to,
+then slack bot should send / forward the email to all the people who subscribe to that email.
+will need to use firebase to store everybody's emails that they subscribe to. firebase subscription schema can look like (id, slack id, email)

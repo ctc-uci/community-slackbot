@@ -6,6 +6,10 @@ __pycache__/
 .env
 firebase-credentials.json
 service-account*.json
+gmail-credentials.json
+gmail-token.json
+gmail-tokens/
+gmail-history-id.txt
 # macOS
 .DS_Store
 

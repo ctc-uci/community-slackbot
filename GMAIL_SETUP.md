@@ -1,6 +1,6 @@
 # Gmail API setup for email-subscription feature
 
-The bot can watch a Gmail inbox and DM Slack users when mail arrives to addresses they subscribed to.
+The bot can watch one or several Gmail inboxes and DM Slack users when mail arrives to addresses they subscribed to. Each Slack user can subscribe to whichever addresses they want (e.g. 4–5 different monitored inboxes).
 
 ## 1. Google Cloud Console
 
@@ -10,27 +10,30 @@ The bot can watch a Gmail inbox and DM Slack users when mail arrives to addresse
 4. Create OAuth 2.0 credentials:
    - APIs & Services → Credentials → Create Credentials → OAuth client ID.
    - Application type: **Desktop app**.
-   - Download the JSON and save it in this directory as `gmail-credentials.json` (or set `GMAIL_CREDENTIALS_PATH` in `.env`).
+   - Download the JSON and save it in this directory as `gmail-credentials.json` (or set `GMAIL_CREDENTIALS_PATH` in `.env`). One OAuth client is used for all monitored accounts; each account signs in once to get its own token.
 
 ## 2. Environment
 
 In `.env`:
 
-- `GMAIL_MONITORED_EMAIL` — the Gmail address to monitor (e.g. `ctc-uci@gmail.com`).
-- Optionally: `GMAIL_CREDENTIALS_PATH`, `GMAIL_TOKEN_PATH`, `GMAIL_HISTORY_PATH` (defaults are in project root).
+- **Single account (legacy):** `GMAIL_MONITORED_EMAIL` — one Gmail address to monitor (e.g. `ctc-uci@gmail.com`). Token and history are stored as `gmail-token.json` and `gmail-history-id.txt` in the project root.
+- **Multiple accounts (4–5 inboxes):** `GMAIL_MONITORED_EMAILS` — comma-separated list (e.g. `inbox1@gmail.com,inbox2@gmail.com,inbox3@gmail.com`). Tokens and history are stored under `gmail-tokens/` (one token and one history file per address). If both are set, `GMAIL_MONITORED_EMAILS` wins.
+- Optionally: `GMAIL_CREDENTIALS_PATH`, `GMAIL_TOKENS_DIR` (default `gmail-tokens/` for multi-account), `GMAIL_TOKEN_PATH`, `GMAIL_HISTORY_PATH` (single-account only).
 
 ## 3. First-time auth (token)
 
-On first run with Gmail enabled, the bot will open a browser for you to sign in with the **monitored** Gmail account. After authorizing, a `gmail-token.json` is written (or path from `GMAIL_TOKEN_PATH`). You only need to do this once per machine.
+On first run, the bot starts one poll thread per monitored account. For each account that doesn’t have a token yet, it will open a browser so you can sign in with **that** Gmail account. After authorizing, a token is written (single: `gmail-token.json`; multi: `gmail-tokens/token_<account>.json`). You only need to do this once per account per machine.
 
-If the bot runs headless, run a one-off auth script that uses the same paths:
+If the bot runs headless, run a one-off auth script per account (multi-account example):
 
 ```bash
 cd ctc-bot
-venv/bin/python -c "
+.venv/bin/python -c "
 from features.gmail import get_gmail_credentials
-get_gmail_credentials()
-print('Token saved. You can start the bot.')
+# Replace with each monitored address; repeat for each account
+get_gmail_credentials('inbox1@gmail.com')
+get_gmail_credentials('inbox2@gmail.com')
+print('Tokens saved. You can start the bot.')
 "
 ```
 
@@ -45,7 +48,7 @@ No extra Firebase setup is required beyond existing `firebase-credentials.json`.
 
 ## 5. Slack commands
 
-- **`/subscribe`** — With no args: list your subscriptions. With an email: subscribe to that address (you’ll get DMs when the monitored inbox receives mail to it).
+- **`/subscribe`** — With no args: list your subscriptions. With an email: subscribe to that address (you’ll get DMs when **any** monitored inbox receives mail to it).
 - **`/unsubscribe email@example.com`** — Remove that subscription.
 
-When the monitored Gmail receives a message, the bot notifies every user who subscribed to the message’s To (or Cc) address by sending a DM with subject, from, and snippet.
+When any monitored Gmail inbox receives a message, the bot notifies every user who subscribed to the message’s To (or Cc) address by sending a DM with subject, from, and snippet. Users can subscribe to one or several of the monitored addresses; each address is independent.

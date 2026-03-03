@@ -1,10 +1,13 @@
 """
-Gmail-filter Slack bot: subscribe to email addresses; when the monitored inbox
+Gmail-filter Slack bot: subscribe to email addresses; when any monitored inbox
 receives mail to a subscribed address, forward a summary to all subscribers via Slack DM.
 
-- /subscribe [email] — add an email to your subscriptions (or open modal to add/list)
+Supports multiple Gmail accounts (e.g. 4-5). Set GMAIL_MONITORED_EMAILS (comma-separated)
+or a single GMAIL_MONITORED_EMAIL. Each Slack user subscribes to whichever addresses
+they want; any monitored inbox receiving mail to that address triggers a DM.
+
+- /subscribe [email] — add an email to your subscriptions (or list current ones)
 - Uses Firebase (email_subscriptions collection) with schema: slack_id, email
-- Gmail API polls the configured inbox; matching messages are sent to subscribers.
 """
 
 import os
@@ -24,26 +27,49 @@ from firebase_client import get_firebase_app
 # -----------------------------------------------------------------------------
 # Config (set in .env; you complete credentials)
 # -----------------------------------------------------------------------------
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 GMAIL_CREDENTIALS_PATH = os.environ.get(
     "GMAIL_CREDENTIALS_PATH",
-    str(Path(__file__).resolve().parent.parent / "gmail-credentials.json"),
+    str(PROJECT_ROOT / "gmail-credentials.json"),
 )
+# Directory for per-account token and history files (used when multiple accounts)
+GMAIL_TOKENS_DIR = Path(
+    os.environ.get("GMAIL_TOKENS_DIR", str(PROJECT_ROOT / "gmail-tokens"))
+)
+# Single-account legacy: one token file, one history file
 GMAIL_TOKEN_PATH = os.environ.get(
     "GMAIL_TOKEN_PATH",
-    str(Path(__file__).resolve().parent.parent / "gmail-token.json"),
+    str(PROJECT_ROOT / "gmail-token.json"),
 )
 GMAIL_HISTORY_PATH = os.environ.get(
     "GMAIL_HISTORY_PATH",
-    str(Path(__file__).resolve().parent.parent / "gmail-history-id.txt"),
+    str(PROJECT_ROOT / "gmail-history-id.txt"),
 )
-# Email address of the Gmail account to monitor (e.g. ctc-uci@gmail.com)
+# One monitored account (legacy) or multiple (comma-separated, e.g. "a@gmail.com,b@gmail.com")
 GMAIL_MONITORED_EMAIL = os.environ.get("GMAIL_MONITORED_EMAIL", "")
+GMAIL_MONITORED_EMAILS_RAW = os.environ.get("GMAIL_MONITORED_EMAILS", "")
+
+def _get_monitored_emails() -> list[str]:
+    """List of monitored Gmail addresses (1 to 5+). Prefer GMAIL_MONITORED_EMAILS."""
+    if GMAIL_MONITORED_EMAILS_RAW:
+        emails = [e.strip().lower() for e in GMAIL_MONITORED_EMAILS_RAW.split(",") if e.strip()]
+        if emails:
+            return emails
+    if GMAIL_MONITORED_EMAIL:
+        return [GMAIL_MONITORED_EMAIL.strip().lower()]
+    return []
 
 # Gmail API scopes needed for reading mail
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
 # Firebase collection for subscriptions: document fields slack_id, email
 SUBSCRIPTIONS_COLLECTION = "email_subscriptions"
+
+
+def _safe_email(account_email: str) -> str:
+    """Filesystem-safe string for one account (token/history filenames)."""
+    return (account_email or "").strip().lower().replace("@", "_at_")
 
 
 def _normalize_email(addr: str) -> str:
@@ -96,13 +122,30 @@ def get_subscribers_for_email(email_address: str) -> list[str]:
 
 
 # -----------------------------------------------------------------------------
-# Gmail API auth (OAuth2; you run once to produce gmail-token.json)
+# Gmail API auth (OAuth2; one token per account when using multiple accounts)
 # -----------------------------------------------------------------------------
-def get_gmail_credentials():
-    """Load or refresh Gmail OAuth2 credentials."""
+def _token_path_for_account(account_email: str | None) -> Path:
+    """Path to token file for this account. None = single-account legacy."""
+    if not account_email:
+        return Path(GMAIL_TOKEN_PATH)
+    GMAIL_TOKENS_DIR.mkdir(parents=True, exist_ok=True)
+    return GMAIL_TOKENS_DIR / f"token_{_safe_email(account_email)}.json"
+
+
+def _history_path_for_account(account_email: str | None) -> Path:
+    """Path to history-id file for this account. None = single-account legacy."""
+    if not account_email:
+        return Path(GMAIL_HISTORY_PATH)
+    GMAIL_TOKENS_DIR.mkdir(parents=True, exist_ok=True)
+    return GMAIL_TOKENS_DIR / f"history_{_safe_email(account_email)}.txt"
+
+
+def get_gmail_credentials(account_email: str | None = None):
+    """Load or refresh Gmail OAuth2 credentials for one account."""
+    token_path = _token_path_for_account(account_email)
     creds = None
-    if Path(GMAIL_TOKEN_PATH).exists():
-        creds = Credentials.from_authorized_user_file(GMAIL_TOKEN_PATH, GMAIL_SCOPES)
+    if token_path.exists():
+        creds = Credentials.from_authorized_user_file(str(token_path), GMAIL_SCOPES)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
@@ -113,26 +156,34 @@ def get_gmail_credentials():
                     "Download from Google Cloud Console (OAuth 2.0 Client ID) and run once to generate token."
                 )
             flow = InstalledAppFlow.from_client_secrets_file(GMAIL_CREDENTIALS_PATH, GMAIL_SCOPES)
+            auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+            login_hint = account_email or GMAIL_MONITORED_EMAIL or "the monitored Gmail account"
+            print(f"[Gmail] Token missing. Sign in with: {login_hint}")
+            print(f"[Gmail] Authorization URL: {auth_url}")
             creds = flow.run_local_server(port=0)
-        with open(GMAIL_TOKEN_PATH, "w") as f:
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(token_path, "w") as f:
             f.write(creds.to_json())
     return creds
 
 
-def get_gmail_service():
-    """Build Gmail API service."""
-    creds = get_gmail_credentials()
+def get_gmail_service(account_email: str | None = None):
+    """Build Gmail API service for one account."""
+    creds = get_gmail_credentials(account_email)
     return build("gmail", "v1", credentials=creds)
 
 
-def _load_history_id() -> str | None:
-    if Path(GMAIL_HISTORY_PATH).exists():
-        return Path(GMAIL_HISTORY_PATH).read_text().strip() or None
+def _load_history_id(account_email: str | None = None) -> str | None:
+    path = _history_path_for_account(account_email)
+    if path.exists():
+        return path.read_text().strip() or None
     return None
 
 
-def _save_history_id(history_id: str) -> None:
-    Path(GMAIL_HISTORY_PATH).write_text(history_id)
+def _save_history_id(history_id: str, account_email: str | None = None) -> None:
+    path = _history_path_for_account(account_email)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(history_id)
 
 
 def _parse_message_recipients(msg) -> list[str]:
@@ -200,20 +251,19 @@ def _process_new_message(service, message_id: str, slack_client: WebClient) -> N
                 pass
 
 
-def _poll_gmail_loop():
-    """Background thread: poll Gmail history and notify Slack subscribers."""
-    if not GMAIL_MONITORED_EMAIL:
-        return
+def _poll_gmail_loop(account_email: str | None):
+    """Background thread: poll one Gmail account; account_email None = single-account legacy."""
     token = os.environ.get("SLACK_BOT_TOKEN")
     if not token:
         return
     slack_client = WebClient(token=token)
     service = None
+    label = account_email or "single"
     while True:
         try:
             if service is None:
-                service = get_gmail_service()
-            start_id = _load_history_id()
+                service = get_gmail_service(account_email)
+            start_id = _load_history_id(account_email)
             if start_id:
                 try:
                     hist = (
@@ -232,18 +282,16 @@ def _poll_gmail_loop():
                 hist = None
 
             if start_id is None or hist is None:
-                # Full sync: get current historyId from profile and recent messages
                 profile = service.users().getProfile(userId="me").execute()
                 new_history_id = profile.get("historyId")
                 if new_history_id:
-                    _save_history_id(str(new_history_id))
-                # Optionally process recent messages on first run (skip to avoid spam)
+                    _save_history_id(str(new_history_id), account_email)
                 time.sleep(60)
                 continue
 
             new_history_id = hist.get("historyId")
             if new_history_id:
-                _save_history_id(str(new_history_id))
+                _save_history_id(str(new_history_id), account_email)
             for rec in hist.get("history", []):
                 for msg_added in rec.get("messagesAdded", []):
                     mid = msg_added.get("message", {}).get("id")
@@ -269,17 +317,21 @@ def register_gmail_handlers(app):
             if not text:
                 # No email provided: show current subscriptions and hint
                 subs = list_subscriptions(user_id)
+                monitored = _get_monitored_emails()
+                hint = "Add: `/subscribe email@example.com`"
+                if monitored:
+                    hint += f"\nMonitored inboxes you can subscribe to: {', '.join(monitored)}"
                 if not subs:
                     client.chat_postEphemeral(
                         channel=body["channel_id"],
                         user=user_id,
-                        text="You have no email subscriptions. Use `/subscribe email@example.com` to add one.",
+                        text=f"You have no email subscriptions. {hint}",
                     )
                 else:
                     client.chat_postEphemeral(
                         channel=body["channel_id"],
                         user=user_id,
-                        text="Your subscriptions:\n• " + "\n• ".join(subs) + "\n\nAdd: `/subscribe email@example.com`",
+                        text="Your subscriptions:\n• " + "\n• ".join(subs) + "\n\n" + hint,
                     )
                 return
             added = add_subscription(user_id, text)
@@ -287,7 +339,7 @@ def register_gmail_handlers(app):
                 client.chat_postEphemeral(
                     channel=body["channel_id"],
                     user=user_id,
-                    text=f"Subscribed to *{text}*. You'll get Slack DMs when the monitored inbox receives mail to this address.",
+                    text=f"Subscribed to *{text}*. You'll get Slack DMs when any monitored inbox receives mail to this address.",
                 )
             else:
                 client.chat_postEphemeral(
@@ -337,7 +389,15 @@ def register_gmail_handlers(app):
             logger.exception("Unsubscribe failed: %s", e)
             raise
 
-    # Start Gmail polling only if config is set
-    if GMAIL_MONITORED_EMAIL and Path(GMAIL_CREDENTIALS_PATH).exists():
-        t = threading.Thread(target=_poll_gmail_loop, daemon=True)
-        t.start()
+    # Start one Gmail poll thread per monitored account
+    monitored = _get_monitored_emails()
+    if monitored and Path(GMAIL_CREDENTIALS_PATH).exists():
+        use_legacy_single = len(monitored) == 1 and bool(GMAIL_MONITORED_EMAIL) and not GMAIL_MONITORED_EMAILS_RAW
+        for i, account in enumerate(monitored):
+            arg = None if use_legacy_single else account
+            t = threading.Thread(target=_poll_gmail_loop, args=(arg,), daemon=True)
+            t.start()
+            # Stagger starts so first-time auth opens one browser at a time
+            if i < len(monitored) - 1:
+                time.sleep(5)
+        print(f"[Gmail] Polling {len(monitored)} account(s): {', '.join(monitored)}")

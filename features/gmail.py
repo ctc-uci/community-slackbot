@@ -157,6 +157,7 @@ def get_gmail_oauth_authorization_url() -> tuple[str | None, str | None]:
     if not base:
         return (None, "Set GMAIL_REDIRECT_URI or RAILWAY_PUBLIC_DOMAIN for OAuth callback.")
     callback_url = base + GMAIL_OAUTH_CALLBACK_PATH
+    logger.info("Gmail OAuth: using redirect_uri=%s (add this exact URI in Google Console)", callback_url)
     try:
         flow = _get_gmail_flow(callback_url)
         auth_url, state = flow.authorization_url(prompt="consent", access_type="offline")

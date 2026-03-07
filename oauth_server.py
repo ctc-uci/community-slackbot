@@ -23,11 +23,16 @@ class OAuthHandler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/") or "/"
         query = parsed.query
 
-        if path == "/gmail/oauth":
+        if path == "/gmail/oauth" or path == "/gmail/oauth/debug":
             gmail = _get_gmail_module()
+            base = gmail._gmail_oauth_callback_base()
+            redirect_uri = (base + gmail.GMAIL_OAUTH_CALLBACK_PATH) if base else "(not set)"
+            if path == "/gmail/oauth/debug":
+                self._send(200, f"redirect_uri sent to Google: {redirect_uri}. Add this exact URL in Google Cloud Console → Credentials → your OAuth client → Authorized redirect URIs.")
+                return
             auth_url, err = gmail.get_gmail_oauth_authorization_url()
             if err:
-                self._send(400, f"Gmail OAuth not available: {err}")
+                self._send(400, f"Gmail OAuth not available: {err}. redirect_uri we use: {redirect_uri}")
                 return
             if not auth_url:
                 self._send(200, "Gmail already authorized. Token file exists.")

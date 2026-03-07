@@ -11,11 +11,19 @@ sends to the monitored inbox; mail from email2 does not notify you.
 import base64
 import io
 import html
+import logging
 import os
 import re
+import tempfile
 import threading
 import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# Max image size to upload to Slack (5 MB); larger attachments are skipped
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_IMAGES_PER_EMAIL = 10
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -259,7 +267,12 @@ def _process_new_message(service, message_id: str, slack_client: WebClient) -> N
     if not slack_ids:
         return
     text = _format_email_for_slack(msg)
-    images = _get_email_images(service, message_id, msg)
+    raw_images = _get_email_images(service, message_id, msg)
+    # Limit size and count so Slack uploads don't timeout or hit limits
+    images = [(b, fn, m) for b, fn, m in raw_images if len(b) <= MAX_IMAGE_BYTES][:MAX_IMAGES_PER_EMAIL]
+    if len(raw_images) > len(images):
+        logger.info("Gmail: using %s of %s image(s) (max %s MB each, max %s per email)", len(images), len(raw_images), MAX_IMAGE_BYTES // (1024 * 1024), MAX_IMAGES_PER_EMAIL)
+
     for slack_id in slack_ids:
         try:
             dm = slack_client.conversations_open(users=[slack_id])
@@ -269,19 +282,29 @@ def _process_new_message(service, message_id: str, slack_client: WebClient) -> N
                     channel=channel_id,
                     text=f"You're subscribed to *{sender}*. New email to the monitored inbox:\n\n{text}",
                 )
-                for img_bytes, filename, _ in images:
+                for img_bytes, filename, mime in images:
                     try:
-                        buf = io.BytesIO(img_bytes)
-                        buf.seek(0)
-                        slack_client.files_upload(
-                            channels=channel_id,
-                            file=buf,
-                            filename=filename,
+                        # Slack SDK can require a real file path in some environments; use a temp file for reliability
+                        with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix or ".png", delete=False) as tmp:
+                            tmp.write(img_bytes)
+                            tmp.flush()
+                            tmp_path = tmp.name
+                        try:
+                            slack_client.files_upload_v2(
+                                channel=channel_id,
+                                file=tmp_path,
+                                title=filename,
+                            )
+                            logger.info("Gmail: uploaded image %s to Slack DM for %s", filename, slack_id)
+                        finally:
+                            Path(tmp_path).unlink(missing_ok=True)
+                    except Exception as e:
+                        logger.warning(
+                            "Gmail: failed to upload image to Slack for %s: %s",
+                            slack_id, e,
                         )
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Gmail: failed to send DM to %s: %s", slack_id, e)
 
 
 def _poll_gmail_loop() -> None:
@@ -310,7 +333,7 @@ def _poll_gmail_loop() -> None:
                     if getattr(e, "resp", None) and getattr(e.resp, "status", None) == 404:
                         start_id = None
                     else:
-                        time.sleep(60)
+                        time.sleep(30)
                         continue
             else:
                 hist = None
@@ -320,7 +343,7 @@ def _poll_gmail_loop() -> None:
                 new_history_id = profile.get("historyId")
                 if new_history_id:
                     _save_history_id(str(new_history_id))
-                time.sleep(60)
+                time.sleep(30)
                 continue
 
             new_history_id = hist.get("historyId")

@@ -13,10 +13,15 @@
         "command": "/edit-spotted",
         "description": "Edit a user's spotted count (admin only)",
         "usage_hint": "[admin] Edit spotted count"
+      },
+      {
+        "command": "/recount-spottings",
+        "description": "Full channel history recount (admin only)",
+        "usage_hint": "[admin] Recount all spottings from full channel history"
       }
     ]
   },
-  "oauth_config": {"scopes": {"bot": ["channels:history", "channels:read", "chat:write", "files:read", "im:history", "users:read"]}},
+  "oauth_config": {"scopes": {"bot": ["channels:history", "channels:join", "channels:read", "chat:write", "files:read", "im:history", "users:read"]}},
   "settings": {
     "event_subscriptions": {"bot_events": ["message.channels", "message.im", "member_joined_channel"]},
     "interactivity": {"is_enabled": true},

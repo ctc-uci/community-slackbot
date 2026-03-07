@@ -23,16 +23,20 @@ In `.env`:
 
 On first run with Gmail enabled, the bot will open a browser for you to sign in with the **monitored** Gmail account. After authorizing, `gmail-token.json` is written. You only need to do this once per machine.
 
-If the bot runs headless, run a one-off auth script:
+### Running headless (server, Docker, SSH, no display)
 
-```bash
-cd ctc-bot
-.venv/bin/python -c "
-from features.gmail import get_gmail_credentials
-get_gmail_credentials()
-print('Token saved. You can start the bot.')
-"
-```
+1. **Option A — Copy an existing token (recommended)**  
+   Run the bot or the one-off auth once on a machine that has a browser (e.g. your laptop). After signing in, copy the token file to the headless server:
+   - `gmail-token.json` (or `GMAIL_TOKEN_PATH`), and  
+   - if you use per-inbox paths: the file under `gmail-tokens/` for that inbox.  
+   Then start the bot on the server. It will load and refresh the token; no browser needed.
+
+2. **Option B — Headless with paste-back**  
+   On the headless server, set in `.env`:
+   ```bash
+   GMAIL_HEADLESS=1
+   ```
+   (or `HEADLESS=1`). Start the app (or run the one-off auth script). It will print an authorization URL. Open that URL in a browser (on any device), sign in with the monitored Gmail account. The browser will redirect to `http://localhost/?state=...&code=...` and show “can’t connect” (no server is running). Copy the **entire URL** from the address bar, paste it into the terminal when prompted, and press Enter. The app will exchange it for a token and save it; no need to copy token files from another machine.
 
 ## 4. Firebase
 

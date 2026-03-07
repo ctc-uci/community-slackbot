@@ -128,8 +128,47 @@ def get_gmail_credentials():
                     "Download from Google Cloud Console (OAuth 2.0 Client ID) and run once to generate token."
                 )
             flow = InstalledAppFlow.from_client_secrets_file(GMAIL_CREDENTIALS_PATH, GMAIL_SCOPES)
-            auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
             login_hint = GMAIL_MONITORED_EMAIL or "the monitored Gmail account"
+
+            # Headless: no browser; set redirect_uri so the auth URL is valid, then prompt for paste-back
+            if os.environ.get("GMAIL_HEADLESS") or os.environ.get("HEADLESS"):
+                flow.redirect_uri = "http://localhost"
+                auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+                print(f"[Gmail] Token missing. Headless mode: no browser will open.")
+                print(f"[Gmail] Sign in with {login_hint} by opening this URL in a browser:")
+                print(auth_url)
+                print()
+                print("[Gmail] After signing in, the browser will go to localhost (nothing is running there).")
+                print("[Gmail] Copy the *entire URL* from the address bar (e.g. http://localhost/?state=...&code=...) and paste it below.")
+                try:
+                    redirect_url = input("[Gmail] Paste the redirect URL here (or press Enter to exit): ").strip()
+                except EOFError:
+                    redirect_url = ""
+                if not redirect_url:
+                    raise FileNotFoundError(
+                        "Gmail token required. Run again and paste the redirect URL after signing in, "
+                        f"or copy the token file from a machine where you completed the flow. Token path: {token_path}"
+                    )
+                try:
+                    # redirect_uri is http://localhost; oauthlib requires HTTPS unless we allow insecure transport
+                    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+                    try:
+                        flow.fetch_token(authorization_response=redirect_url)
+                    finally:
+                        os.environ.pop("OAUTHLIB_INSECURE_TRANSPORT", None)
+                    creds = flow.credentials
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to exchange the redirect URL for a token: {e}. "
+                        "Check that you pasted the full URL from the browser (including ?state=...&code=...)."
+                    ) from e
+                token_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(token_path, "w") as f:
+                    f.write(creds.to_json())
+                print(f"[Gmail] Token saved to {token_path}")
+                return creds
+
+            auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
             print(f"[Gmail] Token missing. Sign in with: {login_hint}")
             print(f"[Gmail] Authorization URL: {auth_url}")
             creds = flow.run_local_server(port=0)

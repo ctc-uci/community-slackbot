@@ -556,7 +556,6 @@ def _process_new_message(service, message_id: str, slack_client: WebClient) -> N
     subject_escaped, from_escaped, body_mrkdwn, quoted_mrkdwn = _get_email_slack_parts(msg)
     # Blocks: header, subject/from, main body, then divider for space before "Previous replies" attachment
     blocks: list[dict] = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": f"You're subscribed to *{_slack_escape(sender)}*. New email to the monitored inbox."}},
         {"type": "section", "text": {"type": "mrkdwn", "text": f"*Subject:* {subject_escaped}\n*From:* {from_escaped}"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": body_mrkdwn or "_No body_"}},
         {"type": "divider"},
@@ -569,7 +568,7 @@ def _process_new_message(service, message_id: str, slack_client: WebClient) -> N
             "text": quoted_mrkdwn,
             "mrkdwn_in": ["text"],
         })
-    fallback_text = f"You're subscribed to {sender}. New email to the monitored inbox.\n\nSubject: {subject_escaped}\nFrom: {from_escaped}"
+    fallback_text = f"Subject: {subject_escaped}\nFrom: {from_escaped}"
 
     for slack_id in slack_ids:
         try:

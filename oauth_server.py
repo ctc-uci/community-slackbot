@@ -53,6 +53,7 @@ class OAuthHandler(BaseHTTPRequestHandler):
             if ok:
                 self._send(200, "Gmail authorized. Token saved. You can close this tab.")
                 self.server.shutdown()  # Stop OAuth server once token is obtained
+                print(f"[OAuth] Server stopped after successful authorization")
             else:
                 self._send(500, f"Authorization failed: {err}")
             return

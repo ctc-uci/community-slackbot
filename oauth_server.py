@@ -52,6 +52,7 @@ class OAuthHandler(BaseHTTPRequestHandler):
             ok, err = gmail.complete_gmail_oauth(full_url)
             if ok:
                 self._send(200, "Gmail authorized. Token saved. You can close this tab.")
+                self.server.shutdown()  # Stop OAuth server once token is obtained
             else:
                 self._send(500, f"Authorization failed: {err}")
             return

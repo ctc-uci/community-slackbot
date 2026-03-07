@@ -666,12 +666,18 @@ def _poll_gmail_loop() -> None:
         time.sleep(15)
 
 
+# Only allow /subscribe and /unsubscribe in this channel
+GMAIL_ALLOWED_CHANNEL_ID = "C092Y1JKCMN"
+
+
 def register_gmail_handlers(app):
     """Register /subscribe, /unsubscribe and start Gmail polling (single inbox, subscribe by sender)."""
 
     @app.command("/subscribe")
     def cmd_subscribe(ack, body, client, logger, respond):
-        # Send a fast ack so Slack doesn't time out the slash command.
+        if body.get("channel_id") != GMAIL_ALLOWED_CHANNEL_ID:
+            ack("This command can only be used in the designated channel.")
+            return
         ack()
 
         def run():
@@ -681,8 +687,7 @@ def register_gmail_handlers(app):
                 if not text:
                     subs = list_subscriptions(user_id)
                     hint = "Subscribe to a *sender*: you'll get DMs when that person emails the monitored inbox. Add: `/subscribe sender@example.com`"
-                    if GMAIL_MONITORED_EMAIL:
-                        hint = f"Monitored inbox: {GMAIL_MONITORED_EMAIL}\n{hint}"
+
                     if not subs:
                         respond(
                             {
@@ -732,6 +737,9 @@ def register_gmail_handlers(app):
 
     @app.command("/unsubscribe")
     def cmd_unsubscribe(ack, body, client, logger, respond):
+        if body.get("channel_id") != GMAIL_ALLOWED_CHANNEL_ID:
+            ack("This command can only be used in the designated channel.")
+            return
         ack()
 
         def run():

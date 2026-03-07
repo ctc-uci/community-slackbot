@@ -242,16 +242,129 @@ def _get_email_images(service, message_id: str, msg) -> list[tuple[bytes, str, s
     return _collect_image_parts(parts or [], service, message_id)
 
 
-def _format_email_for_slack(msg) -> str:
-    """Build a short Slack-friendly summary of the message. Decode HTML entities from Gmail first."""
+def _get_plain_text_from_payload(payload: dict) -> str:
+    """Extract plain text from message payload (single part or walk parts). Returns decoded string."""
+    if not payload:
+        return ""
+    mime = (payload.get("mimeType") or "").lower()
+    body = payload.get("body") or {}
+    if body.get("data") and mime == "text/plain":
+        try:
+            return base64.urlsafe_b64decode(body["data"].encode("utf-8")).decode("utf-8", errors="replace")
+        except Exception:
+            pass
+    for part in payload.get("parts") or []:
+        if part.get("parts"):
+            text = _get_plain_text_from_payload(part)
+            if text:
+                return text
+        mime = (part.get("mimeType") or "").lower()
+        if mime != "text/plain":
+            continue
+        b = part.get("body") or {}
+        if not b.get("data"):
+            continue
+        try:
+            return base64.urlsafe_b64decode(b["data"].encode("utf-8")).decode("utf-8", errors="replace")
+        except Exception:
+            continue
+    return ""
+
+
+def _is_quoted_reply_start(line: str, lines: list[str], i: int) -> bool:
+    """True if this line starts the quoted reply block."""
+    stripped = line.strip()
+    if re.match(r"^On\s+.+wrote\s*:\s*$", stripped, re.IGNORECASE):
+        return True
+    if re.match(r"^On\s+.+,.+wrote\s*:\s*$", stripped, re.IGNORECASE):
+        return True
+    if re.match(r"^-{2,}\s*(Original Message|Forwarded message)", stripped, re.IGNORECASE):
+        return True
+    if re.match(r"^_{3,}\s*$", stripped):
+        return True
+    if stripped.startswith("From:") and i > 0 and any(
+        lines[j].strip().startswith("Sent:") for j in range(max(0, i - 2), min(len(lines), i + 3))
+    ):
+        return True
+    if re.search(r"\bwrote\s*:\s*$", stripped):
+        return True
+    return False
+
+
+def _split_reply_and_quoted(text: str) -> tuple[str, str]:
+    """Split body into (new_reply_text, quoted_part). Either may be empty."""
+    if not text or not text.strip():
+        return ("", "")
+    lines = text.split("\n")
+    reply_lines: list[str] = []
+    quoted_start = None
+    for i, line in enumerate(lines):
+        if _is_quoted_reply_start(line, lines, i):
+            quoted_start = i
+            break
+        reply_lines.append(line)
+    new_reply = "\n".join(reply_lines).strip()
+    quoted = "\n".join(lines[quoted_start:]).strip() if quoted_start is not None else ""
+    return (new_reply, quoted)
+
+
+def _slack_blockquote(text: str, max_chars: int = 800) -> str:
+    """Format text as Slack blockquote (each line prefixed with '> '). Truncate to max_chars."""
+    if not text:
+        return ""
+    lines = text.strip().split("\n")
+    out: list[str] = []
+    n = 0
+    for line in lines:
+        escaped = _slack_escape(line)
+        if n + len(escaped) + 4 > max_chars:  # "> " + line + "\n"
+            remaining = max_chars - n - 6
+            if remaining > 0:
+                out.append("> " + escaped[:remaining] + "…")
+            break
+        out.append("> " + escaped)
+        n += len(escaped) + 2
+    return "\n".join(out)
+
+
+def _get_email_slack_parts(msg) -> tuple[str, str, str, str | None]:
+    """Return (subject_escaped, from_escaped, body_mrkdwn, quoted_mrkdwn_or_none). Body is new reply or full snippet; quoted is blockquoted thread or None."""
     subject = html.unescape(_get_header(msg, "Subject") or "(no subject)")
     from_addr = html.unescape(_get_header(msg, "From") or "")
-    raw_snippet = msg.get("snippet") or ""
-    decoded = html.unescape(raw_snippet)
-    snippet = _slack_escape(decoded[:500])
-    if len(decoded) > 500:
-        snippet += "…"
-    return f"*Subject:* {_slack_escape(subject)}\n*From:* {_slack_escape(from_addr)}\n*Snippet:* {snippet}"
+    subject_escaped = _slack_escape(subject)
+    from_escaped = _slack_escape(from_addr)
+    payload = msg.get("payload") or {}
+    plain = _get_plain_text_from_payload(payload)
+    new_reply = ""
+    quoted = ""
+    if plain:
+        new_reply, quoted = _split_reply_and_quoted(plain)
+    if not new_reply and not quoted:
+        plain = msg.get("snippet") or ""
+        decoded = html.unescape(plain)
+        body = _slack_escape(decoded[:500])
+        if len(decoded) > 500:
+            body += "…"
+        return (subject_escaped, from_escaped, body, None)
+    body_parts: list[str] = []
+    if new_reply:
+        decoded = html.unescape(new_reply)
+        reply_snippet = _slack_escape(decoded[:500])
+        if len(decoded) > 500:
+            reply_snippet += "…"
+        body_parts.append(reply_snippet)
+    body_mrkdwn = "\n\n".join(body_parts) if body_parts else ""
+    quoted_mrkdwn = _slack_blockquote(quoted) if quoted else None
+    return (subject_escaped, from_escaped, body_mrkdwn, quoted_mrkdwn)
+
+
+def _format_email_for_slack(msg) -> str:
+    """Build a short Slack-friendly summary string (legacy). New reply first; quoted thread in blockquote."""
+    subject_escaped, from_escaped, body_mrkdwn, quoted_mrkdwn = _get_email_slack_parts(msg)
+    parts = [f"*Subject:* {subject_escaped}\n*From:* {from_escaped}\n*Snippet:* {body_mrkdwn}"]
+    if quoted_mrkdwn:
+        parts.append(quoted_mrkdwn)
+    return "\n\n".join(parts)
 
 
 def _process_new_message(service, message_id: str, slack_client: WebClient) -> None:
@@ -266,22 +379,42 @@ def _process_new_message(service, message_id: str, slack_client: WebClient) -> N
     slack_ids = get_subscribers_for_sender(sender)
     if not slack_ids:
         return
-    text = _format_email_for_slack(msg)
     raw_images = _get_email_images(service, message_id, msg)
     # Limit size and count so Slack uploads don't timeout or hit limits
     images = [(b, fn, m) for b, fn, m in raw_images if len(b) <= MAX_IMAGE_BYTES][:MAX_IMAGES_PER_EMAIL]
     if len(raw_images) > len(images):
         logger.info("Gmail: using %s of %s image(s) (max %s MB each, max %s per email)", len(images), len(raw_images), MAX_IMAGE_BYTES // (1024 * 1024), MAX_IMAGES_PER_EMAIL)
 
+    subject_escaped, from_escaped, body_mrkdwn, quoted_mrkdwn = _get_email_slack_parts(msg)
+    # Blocks for header and new reply; previous replies go in a legacy attachment so Slack shows "Show more"
+    blocks: list[dict] = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"You're subscribed to *{_slack_escape(sender)}*. New email to the monitored inbox."}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Subject:* {subject_escaped}\n*From:* {from_escaped}"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": body_mrkdwn or "_No body_"}},
+    ]
+    attachments: list[dict] = []
+    if quoted_mrkdwn:
+        # Legacy attachments get real "Show more" collapse; Block Kit section expand does not
+        attachments.append({
+            "title": "Previous replies",
+            "text": quoted_mrkdwn,
+            "mrkdwn_in": ["text"],
+        })
+    fallback_text = f"You're subscribed to {sender}. New email to the monitored inbox.\n\nSubject: {subject_escaped}\nFrom: {from_escaped}"
+
     for slack_id in slack_ids:
         try:
             dm = slack_client.conversations_open(users=[slack_id])
             channel_id = dm.get("channel", {}).get("id")
             if channel_id:
-                slack_client.chat_postMessage(
-                    channel=channel_id,
-                    text=f"You're subscribed to *{sender}*. New email to the monitored inbox:\n\n{text}",
-                )
+                payload: dict = {
+                    "channel": channel_id,
+                    "text": fallback_text,
+                    "blocks": blocks,
+                }
+                if attachments:
+                    payload["attachments"] = attachments
+                slack_client.chat_postMessage(**payload)
                 for img_bytes, filename, mime in images:
                     try:
                         # Slack SDK can require a real file path in some environments; use a temp file for reliability
@@ -333,7 +466,7 @@ def _poll_gmail_loop() -> None:
                     if getattr(e, "resp", None) and getattr(e.resp, "status", None) == 404:
                         start_id = None
                     else:
-                        time.sleep(30)
+                        time.sleep(15)
                         continue
             else:
                 hist = None
@@ -343,7 +476,7 @@ def _poll_gmail_loop() -> None:
                 new_history_id = profile.get("historyId")
                 if new_history_id:
                     _save_history_id(str(new_history_id))
-                time.sleep(30)
+                time.sleep(15)
                 continue
 
             new_history_id = hist.get("historyId")
@@ -359,7 +492,7 @@ def _poll_gmail_loop() -> None:
             pass
         except Exception as e:
             print(f"[Gmail] Poll error: {e}")
-        time.sleep(30)
+        time.sleep(15)
 
 
 def register_gmail_handlers(app):

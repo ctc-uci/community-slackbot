@@ -11,6 +11,7 @@ sends to the monitored inbox; mail from email2 does not notify you.
 import base64
 import io
 import html
+import json
 import logging
 import os
 import re
@@ -122,12 +123,17 @@ def get_gmail_credentials():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            if not Path(GMAIL_CREDENTIALS_PATH).exists():
+            gmail_creds_json = os.environ.get("GMAIL_CREDENTIALS_JSON", "").strip()
+            if not gmail_creds_json and not Path(GMAIL_CREDENTIALS_PATH).exists():
                 raise FileNotFoundError(
                     f"Gmail OAuth credentials not found at {GMAIL_CREDENTIALS_PATH}. "
-                    "Download from Google Cloud Console (OAuth 2.0 Client ID) and run once to generate token."
+                    "Set GMAIL_CREDENTIALS_JSON (JSON one-liner) or add the credentials file."
                 )
-            flow = InstalledAppFlow.from_client_secrets_file(GMAIL_CREDENTIALS_PATH, GMAIL_SCOPES)
+            if gmail_creds_json:
+                client_config = json.loads(gmail_creds_json)
+                flow = InstalledAppFlow.from_client_config(client_config, GMAIL_SCOPES)
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(GMAIL_CREDENTIALS_PATH, GMAIL_SCOPES)
             login_hint = GMAIL_MONITORED_EMAIL or "the monitored Gmail account"
 
             # Headless: no browser; set redirect_uri so the auth URL is valid, then prompt for paste-back
@@ -649,7 +655,8 @@ def register_gmail_handlers(app):
             logger.exception("Unsubscribe failed: %s", e)
             raise
 
-    if GMAIL_MONITORED_EMAIL and Path(GMAIL_CREDENTIALS_PATH).exists():
+    has_gmail_creds = bool(os.environ.get("GMAIL_CREDENTIALS_JSON", "").strip()) or Path(GMAIL_CREDENTIALS_PATH).exists()
+    if GMAIL_MONITORED_EMAIL and has_gmail_creds:
         t = threading.Thread(target=_poll_gmail_loop, daemon=True)
         t.start()
         print(f"[Gmail] Polling inbox: {GMAIL_MONITORED_EMAIL}")

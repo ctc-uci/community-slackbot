@@ -272,8 +272,8 @@ def _get_plain_text_from_payload(payload: dict) -> str:
 
 
 def _is_quoted_reply_start(line: str, lines: list[str], i: int) -> bool:
-    """True if this line starts the quoted reply block."""
-    stripped = line.strip()
+    """True if this line starts the quoted reply block. Strips leading '>' so nested '> On ... wrote:' is detected."""
+    stripped = re.sub(r"^>+\s*", "", line.strip()).strip()
     if re.match(r"^On\s+.+wrote\s*:\s*$", stripped, re.IGNORECASE):
         return True
     if re.match(r"^On\s+.+,.+wrote\s*:\s*$", stripped, re.IGNORECASE):
@@ -308,23 +308,55 @@ def _split_reply_and_quoted(text: str) -> tuple[str, str]:
     return (new_reply, quoted)
 
 
-def _slack_blockquote(text: str, max_chars: int = 800) -> str:
-    """Format text as Slack blockquote (each line prefixed with '> '). Truncate to max_chars."""
-    if not text:
+def _split_quoted_into_replies(quoted: str) -> list[tuple[str, list[str]]]:
+    """Split quoted thread into [(header, body_lines), ...]. Header is 'On ... wrote:'; body lines are stripped of leading '>'."""
+    if not quoted or not quoted.strip():
+        return []
+    lines = quoted.strip().split("\n")
+    segments: list[tuple[str, list[str]]] = []
+    current_header: str | None = None
+    current_body: list[str] = []
+    for i, line in enumerate(lines):
+        if _is_quoted_reply_start(line, lines, i):
+            if current_header is not None:
+                segments.append((current_header, current_body))
+            # Store header without leading '>' so nested replies don't show extra blockquote on date
+            current_header = re.sub(r"^>+\s*", "", line.strip()).strip()
+            current_body = []
+        else:
+            # Strip leading ">" and spaces from quoted lines
+            stripped = line.strip()
+            if stripped.startswith(">"):
+                stripped = re.sub(r"^>+\s*", "", stripped)
+            if current_header is not None and stripped:
+                current_body.append(stripped)
+    if current_header is not None:
+        segments.append((current_header, current_body))
+    return segments
+
+
+def _format_quoted_replies(quoted: str, max_chars: int = 1200) -> str:
+    """Format quoted thread: each reply (date + body) as one blockquote so the bar spans header to text."""
+    segments = _split_quoted_into_replies(quoted)
+    if not segments:
         return ""
-    lines = text.strip().split("\n")
+    sep = "\n\n──────────────\n\n"
     out: list[str] = []
     n = 0
-    for line in lines:
-        escaped = _slack_escape(line)
-        if n + len(escaped) + 4 > max_chars:  # "> " + line + "\n"
-            remaining = max_chars - n - 6
-            if remaining > 0:
-                out.append("> " + escaped[:remaining] + "…")
+    for header, body_lines in segments:
+        header_escaped = _slack_escape(header)
+        body_escaped = [_slack_escape(ln) for ln in body_lines if ln.strip()]
+        # One blockquote per reply: prefix every line with "> " so the bar spans date through reply text
+        lines = [f"*{header_escaped}*"] + body_escaped if body_escaped else [f"*{header_escaped}*"]
+        block = "\n".join("> " + line for line in lines)
+        if n + len(block) + len(sep) > max_chars:
+            remaining = max(0, max_chars - n - 25)
+            if remaining > 0 and block:
+                out.append(block[:remaining] + "…")
             break
-        out.append("> " + escaped)
-        n += len(escaped) + 2
-    return "\n".join(out)
+        out.append(block)
+        n += len(block) + len(sep)
+    return sep.join(out)
 
 
 def _get_email_slack_parts(msg) -> tuple[str, str, str, str | None]:
@@ -354,7 +386,7 @@ def _get_email_slack_parts(msg) -> tuple[str, str, str, str | None]:
             reply_snippet += "…"
         body_parts.append(reply_snippet)
     body_mrkdwn = "\n\n".join(body_parts) if body_parts else ""
-    quoted_mrkdwn = _slack_blockquote(quoted) if quoted else None
+    quoted_mrkdwn = _format_quoted_replies(quoted) if quoted else None
     return (subject_escaped, from_escaped, body_mrkdwn, quoted_mrkdwn)
 
 
@@ -386,11 +418,12 @@ def _process_new_message(service, message_id: str, slack_client: WebClient) -> N
         logger.info("Gmail: using %s of %s image(s) (max %s MB each, max %s per email)", len(images), len(raw_images), MAX_IMAGE_BYTES // (1024 * 1024), MAX_IMAGES_PER_EMAIL)
 
     subject_escaped, from_escaped, body_mrkdwn, quoted_mrkdwn = _get_email_slack_parts(msg)
-    # Blocks for header and new reply; previous replies go in a legacy attachment so Slack shows "Show more"
+    # Blocks: header, subject/from, main body, then divider for space before "Previous replies" attachment
     blocks: list[dict] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": f"You're subscribed to *{_slack_escape(sender)}*. New email to the monitored inbox."}},
         {"type": "section", "text": {"type": "mrkdwn", "text": f"*Subject:* {subject_escaped}\n*From:* {from_escaped}"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": body_mrkdwn or "_No body_"}},
+        {"type": "divider"},
     ]
     attachments: list[dict] = []
     if quoted_mrkdwn:

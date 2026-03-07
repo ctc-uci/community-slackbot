@@ -8,6 +8,8 @@ sends to the monitored inbox; mail from email2 does not notify you.
 - Uses Firebase (email_subscriptions collection) with schema: slack_id, email (sender)
 """
 
+import base64
+import io
 import html
 import os
 import re
@@ -174,6 +176,64 @@ def _slack_escape(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _collect_image_parts(parts: list, service, message_id: str) -> list[tuple[bytes, str, str]]:
+    """Recursively collect image parts from MIME structure. Returns list of (bytes, filename, mime_type)."""
+    result = []
+    for part in parts or []:
+        if part.get("parts"):
+            result.extend(_collect_image_parts(part["parts"], service, message_id))
+            continue
+        mime = (part.get("mimeType") or "").lower()
+        if not mime.startswith("image/"):
+            continue
+        body = part.get("body") or {}
+        raw = None
+        if body.get("data"):
+            try:
+                raw = base64.urlsafe_b64decode(body["data"].encode("utf-8"))
+            except Exception:
+                continue
+        elif body.get("attachmentId"):
+            try:
+                att = (
+                    service.users()
+                    .messages()
+                    .attachments()
+                    .get(userId="me", messageId=message_id, id=body["attachmentId"])
+                    .execute()
+                )
+                if att.get("data"):
+                    raw = base64.urlsafe_b64decode(att["data"].encode("utf-8"))
+            except Exception:
+                continue
+        if raw is None:
+            continue
+        filename = (part.get("filename") or "").strip() or _image_filename_from_mime(mime)
+        result.append((raw, filename, mime))
+    return result
+
+
+def _image_filename_from_mime(mime: str) -> str:
+    """Default filename for image mime type."""
+    ext = {"image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp"}.get(
+        mime.split(";")[0].strip(), "png"
+    )
+    return f"image.{ext}"
+
+
+def _get_email_images(service, message_id: str, msg) -> list[tuple[bytes, str, str]]:
+    """Return list of (bytes, filename, mime_type) for all images in the message."""
+    payload = msg.get("payload") or {}
+    parts = payload.get("parts")
+    if not parts:
+        body = payload.get("body") or {}
+        mime = (payload.get("mimeType") or "").lower()
+        if mime.startswith("image/") and (body.get("data") or body.get("attachmentId")):
+            # Single-part image message
+            return _collect_image_parts([payload], service, message_id)
+    return _collect_image_parts(parts or [], service, message_id)
+
+
 def _format_email_for_slack(msg) -> str:
     """Build a short Slack-friendly summary of the message. Decode HTML entities from Gmail first."""
     subject = html.unescape(_get_header(msg, "Subject") or "(no subject)")
@@ -199,6 +259,7 @@ def _process_new_message(service, message_id: str, slack_client: WebClient) -> N
     if not slack_ids:
         return
     text = _format_email_for_slack(msg)
+    images = _get_email_images(service, message_id, msg)
     for slack_id in slack_ids:
         try:
             dm = slack_client.conversations_open(users=[slack_id])
@@ -208,6 +269,17 @@ def _process_new_message(service, message_id: str, slack_client: WebClient) -> N
                     channel=channel_id,
                     text=f"You're subscribed to *{sender}*. New email to the monitored inbox:\n\n{text}",
                 )
+                for img_bytes, filename, _ in images:
+                    try:
+                        buf = io.BytesIO(img_bytes)
+                        buf.seek(0)
+                        slack_client.files_upload(
+                            channels=channel_id,
+                            file=buf,
+                            filename=filename,
+                        )
+                    except Exception:
+                        pass
         except Exception:
             pass
 

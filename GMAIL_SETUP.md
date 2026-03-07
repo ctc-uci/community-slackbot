@@ -43,7 +43,11 @@ The same Firebase project as the rest of the bot is used. A collection `email_su
 
 No extra Firebase setup is required beyond existing `firebase-credentials.json`.
 
-## 5. Slack commands
+## 5. Slack app scope for images
+
+To show images from emails in the forwarded Slack DMs, the Slack app needs the **`files:write`** scope. In [Slack API](https://api.slack.com/apps) → your app → **OAuth & Permissions** → Scopes → Bot Token Scopes, add `files:write`. Reinstall the app to the workspace if you add it later.
+
+## 6. Slack commands
 
 - **`/subscribe`** — With no args: list your sender subscriptions. With an email: subscribe to that **sender** (you’ll get DMs when that person emails the monitored inbox).
 - **`/unsubscribe sender@example.com`** — Remove that sender subscription.

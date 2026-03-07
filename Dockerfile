@@ -21,6 +21,8 @@ COPY . .
 # Set environment variables (optional defaults)
 ENV TZ=America/Los_Angeles
 ENV TEST_CHANNEL_ID="C0ACQP6P3T2"
+# Unbuffer Python stdout/stderr so print() and logs show in Railway deploy logs
+ENV PYTHONUNBUFFERED=1
 
 # Port 3000 default; Railway sets PORT at runtime (used for /gmail/oauth callback server)
 EXPOSE 3000

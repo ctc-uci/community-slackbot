@@ -681,29 +681,25 @@ def register_gmail_handlers(app):
                 if GMAIL_MONITORED_EMAIL:
                     hint = f"Monitored inbox: {GMAIL_MONITORED_EMAIL}\n{hint}"
                 if not subs:
-                    client.chat_postEphemeral(
+                    client.chat_postMessage(
                         channel=body["channel_id"],
-                        user=user_id,
                         text=f"You have no sender subscriptions. {hint}",
                     )
                 else:
-                    client.chat_postEphemeral(
+                    client.chat_postMessage(
                         channel=body["channel_id"],
-                        user=user_id,
                         text="Senders you're subscribed to:\n• " + "\n• ".join(subs) + "\n\n" + hint,
                     )
                 return
             added = add_subscription(user_id, text)
             if added:
-                client.chat_postEphemeral(
+                client.chat_postMessage(
                     channel=body["channel_id"],
-                    user=user_id,
                     text=f"Subscribed to *{text}*. You'll get a DM when this sender emails the monitored inbox.",
                 )
             else:
-                client.chat_postEphemeral(
+                client.chat_postMessage(
                     channel=body["channel_id"],
-                    user=user_id,
                     text=f"You're already subscribed to *{text}*, or the address is invalid.",
                 )
         except Exception as e:
@@ -719,29 +715,25 @@ def register_gmail_handlers(app):
             if not text:
                 subs = list_subscriptions(user_id)
                 if not subs:
-                    client.chat_postEphemeral(
+                    client.chat_postMessage(
                         channel=body["channel_id"],
-                        user=user_id,
                         text="You have no subscriptions. Use `/unsubscribe sender@example.com` to remove one.",
                     )
                 else:
-                    client.chat_postEphemeral(
+                    client.chat_postMessage(
                         channel=body["channel_id"],
-                        user=user_id,
                         text="Senders you're subscribed to:\n• " + "\n• ".join(subs) + "\n\nRemove: `/unsubscribe sender@example.com`",
                     )
                 return
             removed = remove_subscription(user_id, text)
             if removed:
-                client.chat_postEphemeral(
+                client.chat_postMessage(
                     channel=body["channel_id"],
-                    user=user_id,
                     text=f"Unsubscribed from *{text}*.",
                 )
             else:
-                client.chat_postEphemeral(
+                client.chat_postMessage(
                     channel=body["channel_id"],
-                    user=user_id,
                     text=f"You weren't subscribed to *{text}* (or invalid address).",
                 )
         except Exception as e:

@@ -8,6 +8,7 @@ sends to the monitored inbox; mail from email2 does not notify you.
 - Uses Firebase (email_subscriptions collection) with schema: slack_id, email (sender)
 """
 
+import html
 import os
 import re
 import threading
@@ -166,15 +167,23 @@ def _get_header(msg, name: str) -> str:
     return next((h["value"] for h in headers if h.get("name", "").lower() == name.lower()), "")
 
 
+def _slack_escape(s: str) -> str:
+    """Escape & < > for Slack mrkdwn so entities and angle brackets display literally."""
+    if not s:
+        return s
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _format_email_for_slack(msg) -> str:
-    """Build a short Slack-friendly summary of the message."""
-    subject = _get_header(msg, "Subject") or "(no subject)"
-    from_addr = _get_header(msg, "From")
-    raw_snippet = (msg.get("snippet") or "")
-    snippet = raw_snippet.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")[:500]
-    if len(raw_snippet) > 500:
+    """Build a short Slack-friendly summary of the message. Decode HTML entities from Gmail first."""
+    subject = html.unescape(_get_header(msg, "Subject") or "(no subject)")
+    from_addr = html.unescape(_get_header(msg, "From") or "")
+    raw_snippet = msg.get("snippet") or ""
+    decoded = html.unescape(raw_snippet)
+    snippet = _slack_escape(decoded[:500])
+    if len(decoded) > 500:
         snippet += "…"
-    return f"*Subject:* {subject}\n*From:* {from_addr}\n*Snippet:* {snippet}"
+    return f"*Subject:* {_slack_escape(subject)}\n*From:* {_slack_escape(from_addr)}\n*Snippet:* {snippet}"
 
 
 def _process_new_message(service, message_id: str, slack_client: WebClient) -> None:

@@ -36,7 +36,18 @@ On first run with Gmail enabled, the bot will open a browser for you to sign in 
    ```bash
    GMAIL_HEADLESS=1
    ```
-   (or `HEADLESS=1`). Start the app (or run the one-off auth script). It will print an authorization URL. Open that URL in a browser (on any device), sign in with the monitored Gmail account. The browser will redirect to `http://localhost/?state=...&code=...` and show “can’t connect” (no server is running). Copy the **entire URL** from the address bar, paste it into the terminal when prompted, and press Enter. The app will exchange it for a token and save it; no need to copy token files from another machine.
+   (or `HEADLESS=1`). Start the app (or run the one-off auth script). It will print an authorization URL. Open that URL in a browser (on any device), sign in with the monitored Gmail account. The browser will redirect to `http://localhost/?state=...&code=...` and show “can’t connect” (no server is running). Copy the **entire URL** from the address bar, paste it into the terminal when prompted, and press Enter. The app will exchange it for a token and save it;    no need to copy token files from another machine.
+
+3. **Option C — Railway (or any public URL) OAuth callback**  
+   Deploy the app to [Railway](https://railway.app) (or any host with a public URL). Railway sets `RAILWAY_PUBLIC_DOMAIN`; the app starts an HTTP server and uses `https://<RAILWAY_PUBLIC_DOMAIN>/gmail/oauth/callback` as the OAuth redirect.
+
+   - In **Google Cloud Console** → your OAuth client → **Authorized redirect URIs**, add:
+     `https://<your-railway-app>.up.railway.app/gmail/oauth/callback`
+     (Use your real Railway URL.)
+   - Deploy with `GMAIL_CREDENTIALS_JSON`, `GMAIL_MONITORED_EMAIL`, and Slack env vars set. Do **not** set `GMAIL_HEADLESS`.
+   - After deploy, open **https://your-app.up.railway.app/gmail/oauth** in a browser. You’ll be redirected to Google to sign in; after authorizing, the app saves the token and Gmail polling starts.
+
+   If your host is not Railway, set `GMAIL_REDIRECT_URI` to your app’s base URL and add that base + `/gmail/oauth/callback` to Google’s authorized redirect URIs.
 
 ## 4. Firebase
 

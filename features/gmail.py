@@ -54,8 +54,16 @@ GMAIL_HISTORY_PATH = os.environ.get(
 # Single monitored inbox (e.g. ctc-uci@gmail.com)
 GMAIL_MONITORED_EMAIL = os.environ.get("GMAIL_MONITORED_EMAIL", "").strip().lower()
 
+# Optional: base URL for OAuth callback (e.g. https://your-app.up.railway.app). If unset, derived from RAILWAY_PUBLIC_DOMAIN.
+GMAIL_REDIRECT_BASE = (os.environ.get("GMAIL_REDIRECT_URI") or os.environ.get("GMAIL_REDIRECT_BASE") or "").strip().rstrip("/")
+
 # Gmail API scopes needed for reading mail
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+GMAIL_OAUTH_CALLBACK_PATH = "/gmail/oauth/callback"
+
+# PKCE: store state -> code_verifier between /gmail/oauth and /gmail/oauth/callback
+_gmail_oauth_pkce_store: dict[str, str] = {}
 
 # Firebase: email_subscriptions documents = slack_id, email (email = sender to subscribe to)
 SUBSCRIPTIONS_COLLECTION = "email_subscriptions"
@@ -113,6 +121,81 @@ def get_subscribers_for_sender(sender_email: str) -> list[str]:
 # -----------------------------------------------------------------------------
 # Gmail API auth (OAuth2; one token for the single monitored inbox)
 # -----------------------------------------------------------------------------
+def _gmail_oauth_callback_base() -> str | None:
+    """Return base URL for OAuth callback (e.g. https://myapp.up.railway.app) or None if not configured."""
+    if GMAIL_REDIRECT_BASE:
+        return GMAIL_REDIRECT_BASE
+    domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    if domain:
+        return f"https://{domain}"
+    return None
+
+
+def _get_gmail_flow(redirect_uri: str, code_verifier: str | None = None):
+    """Build InstalledAppFlow with the given redirect_uri. Optional code_verifier for PKCE callback."""
+    gmail_creds_json = os.environ.get("GMAIL_CREDENTIALS_JSON", "").strip()
+    kwargs = {}
+    if code_verifier is not None:
+        kwargs["code_verifier"] = code_verifier
+        kwargs["autogenerate_code_verifier"] = False
+    if gmail_creds_json:
+        client_config = json.loads(gmail_creds_json)
+        flow = InstalledAppFlow.from_client_config(client_config, GMAIL_SCOPES, **kwargs)
+    else:
+        if not Path(GMAIL_CREDENTIALS_PATH).exists():
+            raise FileNotFoundError("Gmail credentials required (file or GMAIL_CREDENTIALS_JSON).")
+        flow = InstalledAppFlow.from_client_secrets_file(GMAIL_CREDENTIALS_PATH, GMAIL_SCOPES, **kwargs)
+    flow.redirect_uri = redirect_uri
+    return flow
+
+
+def get_gmail_oauth_authorization_url() -> tuple[str | None, str | None]:
+    """Return (authorization_url, None) for HTTP redirect, or (None, error_message). Uses callback base if set."""
+    if Path(GMAIL_TOKEN_PATH).exists():
+        return (None, None)
+    base = _gmail_oauth_callback_base()
+    if not base:
+        return (None, "Set GMAIL_REDIRECT_URI or RAILWAY_PUBLIC_DOMAIN for OAuth callback.")
+    callback_url = base + GMAIL_OAUTH_CALLBACK_PATH
+    try:
+        flow = _get_gmail_flow(callback_url)
+        auth_url, state = flow.authorization_url(prompt="consent", access_type="offline")
+        if state and getattr(flow, "code_verifier", None):
+            _gmail_oauth_pkce_store[state] = flow.code_verifier
+        return (auth_url, None)
+    except Exception as e:
+        return (None, str(e))
+
+
+def complete_gmail_oauth(callback_full_url: str) -> tuple[bool, str]:
+    """Exchange callback URL for token and save. Returns (True, "") or (False, error_message)."""
+    base = _gmail_oauth_callback_base()
+    if not base:
+        return (False, "GMAIL_REDIRECT_URI or RAILWAY_PUBLIC_DOMAIN not set.")
+    callback_url = base + GMAIL_OAUTH_CALLBACK_PATH
+    state = None
+    if "state=" in callback_full_url:
+        from urllib.parse import parse_qs, urlparse
+        parsed = urlparse(callback_full_url)
+        qs = parse_qs(parsed.query)
+        state = (qs.get("state") or [None])[0]
+    code_verifier = _gmail_oauth_pkce_store.pop(state, None) if state else None
+    if not code_verifier:
+        return (False, "Missing or expired PKCE state. Visit /gmail/oauth again and complete the flow in one go.")
+    try:
+        flow = _get_gmail_flow(callback_url, code_verifier=code_verifier)
+        flow.fetch_token(authorization_response=callback_full_url)
+        creds = flow.credentials
+        token_path = Path(GMAIL_TOKEN_PATH)
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text(creds.to_json())
+        logger.info("Gmail: token saved via OAuth callback to %s", token_path)
+        return (True, "")
+    except Exception as e:
+        logger.exception("Gmail: OAuth callback exchange failed")
+        return (False, str(e))
+
+
 def get_gmail_credentials():
     """Load or refresh Gmail OAuth2 credentials for the monitored inbox."""
     token_path = Path(GMAIL_TOKEN_PATH)
@@ -135,6 +218,13 @@ def get_gmail_credentials():
             else:
                 flow = InstalledAppFlow.from_client_secrets_file(GMAIL_CREDENTIALS_PATH, GMAIL_SCOPES)
             login_hint = GMAIL_MONITORED_EMAIL or "the monitored Gmail account"
+
+            # OAuth callback URL configured (e.g. Railway): user will visit /gmail/oauth in browser
+            if _gmail_oauth_callback_base():
+                raise FileNotFoundError(
+                    "Gmail token missing. Visit this app's /gmail/oauth URL in your browser to authorize "
+                    f"(e.g. https://your-app.up.railway.app/gmail/oauth). Token path: {token_path}"
+                )
 
             # Headless: no browser; set redirect_uri so the auth URL is valid, then prompt for paste-back
             if os.environ.get("GMAIL_HEADLESS") or os.environ.get("HEADLESS"):
@@ -527,6 +617,7 @@ def _poll_gmail_loop() -> None:
         return
     slack_client = WebClient(token=token)
     service = None
+    token_missing_logged = False
     while True:
         try:
             if service is None:
@@ -565,9 +656,10 @@ def _poll_gmail_loop() -> None:
                     mid = msg_added.get("message", {}).get("id")
                     if mid:
                         _process_new_message(service, mid, slack_client)
-        except FileNotFoundError:
-            # Credentials not set up yet
-            pass
+        except FileNotFoundError as e:
+            if not token_missing_logged:
+                logger.info("Gmail: token missing. %s", e)
+                token_missing_logged = True
         except Exception as e:
             print(f"[Gmail] Poll error: {e}")
         time.sleep(15)

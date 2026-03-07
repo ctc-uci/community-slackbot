@@ -22,7 +22,7 @@ COPY . .
 ENV TZ=America/Los_Angeles
 ENV TEST_CHANNEL_ID="C0ACQP6P3T2"
 
-# Expose port if needed (for Bolt Socket Mode this isn't strictly necessary)
+# Port 3000 default; Railway sets PORT at runtime (used for /gmail/oauth callback server)
 EXPOSE 3000
 
 # Command to run your bot

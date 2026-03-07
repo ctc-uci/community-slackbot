@@ -670,83 +670,121 @@ def register_gmail_handlers(app):
     """Register /subscribe, /unsubscribe and start Gmail polling (single inbox, subscribe by sender)."""
 
     @app.command("/subscribe")
-    def cmd_subscribe(ack, body, client, logger):
-        try:
-            ack()
+    def cmd_subscribe(ack, body, client, logger, respond):
+        # Send a fast ack so Slack doesn't time out the slash command.
+        ack()
+
+        def run():
             user_id = body["user_id"]
-            text = (body.get("text") or "").strip()
-            if not text:
-                subs = list_subscriptions(user_id)
-                hint = "Subscribe to a *sender*: you'll get DMs when that person emails the monitored inbox. Add: `/subscribe sender@example.com`"
-                if GMAIL_MONITORED_EMAIL:
-                    hint = f"Monitored inbox: {GMAIL_MONITORED_EMAIL}\n{hint}"
-                if not subs:
-                    client.chat_postEphemeral(
-                        channel=body["channel_id"],
-                        user=user_id,
-                        text=f"You have no sender subscriptions. {hint}",
+            try:
+                text = (body.get("text") or "").strip()
+                if not text:
+                    subs = list_subscriptions(user_id)
+                    hint = "Subscribe to a *sender*: you'll get DMs when that person emails the monitored inbox. Add: `/subscribe sender@example.com`"
+                    if GMAIL_MONITORED_EMAIL:
+                        hint = f"Monitored inbox: {GMAIL_MONITORED_EMAIL}\n{hint}"
+                    if not subs:
+                        respond(
+                            {
+                                "response_type": "ephemeral",
+                                "text": f"You have no sender subscriptions. {hint}",
+                            }
+                        )
+                    else:
+                        respond(
+                            {
+                                "response_type": "ephemeral",
+                                "text": "Senders you're subscribed to:\n• "
+                                + "\n• ".join(subs)
+                                + "\n\n"
+                                + hint,
+                            }
+                        )
+                    return
+                added = add_subscription(user_id, text)
+                if added:
+                    respond(
+                        {
+                            "response_type": "ephemeral",
+                            "text": f"Subscribed to *{text}*. You'll get a DM when this sender emails the monitored inbox.",
+                        }
                     )
                 else:
-                    client.chat_postEphemeral(
-                        channel=body["channel_id"],
-                        user=user_id,
-                        text="Senders you're subscribed to:\n• " + "\n• ".join(subs) + "\n\n" + hint,
+                    respond(
+                        {
+                            "response_type": "ephemeral",
+                            "text": f"You're already subscribed to *{text}*, or the address is invalid.",
+                        }
                     )
-                return
-            added = add_subscription(user_id, text)
-            if added:
-                client.chat_postEphemeral(
-                    channel=body["channel_id"],
-                    user=user_id,
-                    text=f"Subscribed to *{text}*. You'll get a DM when this sender emails the monitored inbox.",
-                )
-            else:
-                client.chat_postEphemeral(
-                    channel=body["channel_id"],
-                    user=user_id,
-                    text=f"You're already subscribed to *{text}*, or the address is invalid.",
-                )
-        except Exception as e:
-            logger.exception("Subscribe failed: %s", e)
-            raise
+            except Exception as e:
+                logger.exception("Subscribe failed: %s", e)
+                try:
+                    respond(
+                        {
+                            "response_type": "ephemeral",
+                            "text": "Subscribe failed. Please try again.",
+                        }
+                    )
+                except Exception:
+                    pass
+
+        threading.Thread(target=run, daemon=True).start()
 
     @app.command("/unsubscribe")
-    def cmd_unsubscribe(ack, body, client, logger):
-        try:
-            ack()
+    def cmd_unsubscribe(ack, body, client, logger, respond):
+        ack()
+
+        def run():
             user_id = body["user_id"]
-            text = (body.get("text") or "").strip()
-            if not text:
-                subs = list_subscriptions(user_id)
-                if not subs:
-                    client.chat_postEphemeral(
-                        channel=body["channel_id"],
-                        user=user_id,
-                        text="You have no subscriptions. Use `/unsubscribe sender@example.com` to remove one.",
+            try:
+                text = (body.get("text") or "").strip()
+                if not text:
+                    subs = list_subscriptions(user_id)
+                    if not subs:
+                        respond(
+                            {
+                                "response_type": "ephemeral",
+                                "text": "You have no subscriptions. Use `/unsubscribe sender@example.com` to remove one.",
+                            }
+                        )
+                    else:
+                        respond(
+                            {
+                                "response_type": "ephemeral",
+                                "text": "Senders you're subscribed to:\n• "
+                                + "\n• ".join(subs)
+                                + "\n\nRemove: `/unsubscribe sender@example.com`",
+                            }
+                        )
+                    return
+                removed = remove_subscription(user_id, text)
+                if removed:
+                    respond(
+                        {
+                            "response_type": "ephemeral",
+                            "text": f"Unsubscribed from *{text}*.",
+                        }
                     )
                 else:
-                    client.chat_postEphemeral(
-                        channel=body["channel_id"],
-                        user=user_id,
-                        text="Senders you're subscribed to:\n• " + "\n• ".join(subs) + "\n\nRemove: `/unsubscribe sender@example.com`",
+                    respond(
+                        {
+                            "response_type": "ephemeral",
+                            "text": f"You weren't subscribed to *{text}* (or invalid address).",
+                        }
                     )
-                return
-            removed = remove_subscription(user_id, text)
-            if removed:
-                client.chat_postEphemeral(
-                    channel=body["channel_id"],
-                    user=user_id,
-                    text=f"Unsubscribed from *{text}*.",
-                )
-            else:
-                client.chat_postEphemeral(
-                    channel=body["channel_id"],
-                    user=user_id,
-                    text=f"You weren't subscribed to *{text}* (or invalid address).",
-                )
-        except Exception as e:
-            logger.exception("Unsubscribe failed: %s", e)
-            raise
+            except Exception as e:
+                logger.exception("Unsubscribe failed: %s", e)
+                try:
+                    respond(
+                        {
+                            "response_type": "ephemeral",
+                            "text": "Unsubscribe failed. Please try again.",
+                        }
+                    )
+                except Exception:
+                    pass
+
+        threading.Thread(target=run, daemon=True).start()
 
     has_gmail_creds = bool(os.environ.get("GMAIL_CREDENTIALS_JSON", "").strip()) or Path(GMAIL_CREDENTIALS_PATH).exists()
     if GMAIL_MONITORED_EMAIL and has_gmail_creds:

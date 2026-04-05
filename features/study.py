@@ -25,14 +25,16 @@ STUDY_CHANNEL_ID = "C0ACQP6P3T2"
 TIMEZONE = pytz.timezone(os.environ.get("TZ", "America/Los_Angeles"))
 
 UCI_LOCATIONS = [
-    "Langson Library",
     "Science Library",
+    "CSL",
+    "ALP",
     "Gateway Study Center",
+    "Langson Library",
     "Student Center",
-    "Aldrich Hall",
-    "Engineering Tower",
-    "Social Science Plaza",
-    "Anteater Recreation Center (ARC)",
+    "DBH",
+    "ISEB",
+    "Humanities Gateway 2nd Floor (Ryan's Secret Spot)",
+    "Engineering Quad",
     "Other",
 ]
 

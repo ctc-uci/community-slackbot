@@ -11,7 +11,7 @@
     "bot_user": {
       "display_name": "ctc-bot",
       "always_online": true
-    }
+    },
   },
   "oauth_config": {
     "scopes": {

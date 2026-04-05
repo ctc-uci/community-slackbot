@@ -34,6 +34,9 @@ UCI_LOCATIONS = [
 # session_id -> { user_id, user_name, location, end_ts }
 active_sessions = {}
 
+# user_id -> list of { expired_at, session } for sessions that expired today
+expired_today = {}
+
 def _build_announcement_text(session):
     names = session["participants"]
     with_suffix = ""
@@ -56,11 +59,19 @@ def _build_full_text(session):
 def _clean_expired_sessions(client=None):
     """Remove expired sessions and send 5-min reminders if client is provided."""
     now = time.time()
+    today = datetime.now(TIMEZONE).date()
     expired = [sid for sid, s in active_sessions.items() if s["end_ts"] < now]
 
     # Remove expired sessions
     for sid in expired:
         s = active_sessions[sid]
+        user_id = s["user_id"]
+        # Save to expired_today if it expired today (for /study-edit reactivation)
+        expired_at_dt = datetime.fromtimestamp(s["end_ts"], tz=TIMEZONE)
+        if expired_at_dt.date() == today:
+            if user_id not in expired_today:
+                expired_today[user_id] = []
+            expired_today[user_id].append({"expired_at": s["end_ts"], "session": dict(s)})
         channel_id = s.get("channel_id")
         message_ts = s.get("message_ts")
         if client and channel_id and message_ts:
@@ -69,6 +80,15 @@ def _clean_expired_sessions(client=None):
             except Exception:
                 pass
         del active_sessions[sid]
+
+    # Clean up expired_today entries from previous days
+    for uid in list(expired_today.keys()):
+        expired_today[uid] = [
+            e for e in expired_today[uid]
+            if datetime.fromtimestamp(e["expired_at"], tz=TIMEZONE).date() == today
+        ]
+        if not expired_today[uid]:
+            del expired_today[uid]
 
     # Send 5-min reminders
     for sid, session in active_sessions.items():
@@ -387,6 +407,50 @@ def register_study_handlers(app):
                 return
             user_id = body["user_id"]
             _clean_expired_sessions(client)
+
+            # /study edit — edit active session or reactivate a past one from today
+            if body.get("text", "").strip().lower() == "edit":
+                existing_sid, existing_session = _get_user_session(user_id)
+                if existing_sid:
+                    client.views_open(
+                        trigger_id=trigger_id,
+                        view={
+                            "type": "modal",
+                            "callback_id": "study_modal",
+                            "title": {"type": "plain_text", "text": "Edit study session"},
+                            "submit": {"type": "plain_text", "text": "Update"},
+                            "private_metadata": existing_sid,
+                            "blocks": _build_study_modal_blocks(session_data=existing_session),
+                        },
+                    )
+                    return
+
+                user_expired = expired_today.get(user_id, [])
+                if user_expired:
+                    most_recent = max(user_expired, key=lambda e: e["expired_at"])
+                    expired_session = dict(most_recent["session"])
+                    # Clear time_range so times default to now + 1hr in the modal
+                    expired_session.pop("time_range", None)
+                    client.views_open(
+                        trigger_id=trigger_id,
+                        view={
+                            "type": "modal",
+                            "callback_id": "study_modal",
+                            "title": {"type": "plain_text", "text": "Reactivate study session"},
+                            "submit": {"type": "plain_text", "text": "Reactivate"},
+                            "private_metadata": "",  # empty = create new session on submit
+                            "blocks": _build_study_modal_blocks(session_data=expired_session),
+                        },
+                    )
+                    return
+
+                client.chat_postEphemeral(
+                    channel=body["channel_id"],
+                    user=user_id,
+                    text="No active or recent study sessions to edit. Use `/study` to start a new one.",
+                )
+                return
+
             existing_sid, existing_session = _get_user_session(user_id)
             if existing_sid is not None:
                 _open_already_studying_modal(trigger_id, existing_sid, existing_session, client)
@@ -405,6 +469,7 @@ def register_study_handlers(app):
         except Exception as e:
             logger.exception("Failed to open /study modal: %s", e)
             raise
+
     # Ack block_actions from time/AM-PM dropdowns in the study modal (no-op, state is in view_submission)
     def _ack_modal_select(ack):
         ack()

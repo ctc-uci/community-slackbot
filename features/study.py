@@ -9,16 +9,18 @@ import requests
 
 from slack_sdk import WebClient
 import pytz
+from firebase_admin import firestore
+from firebase_client import get_firebase_app
 
 # Channel where announcements are posted
 # Use TEST_CHANNEL_ID if ENV is "development", otherwise use the hardcoded channel
 
-STUDY_CHANNEL_ID = "C0ACQP6P3T2"
-# STUDY_CHANNEL_ID = os.environ.get("TEST_CHANNEL_ID")
-# if STUDY_CHANNEL_ID == 'C0ABVSK5QH0':
-#     print("TEST_CHANNEL_ID is set")
-# else:
-#     print("TEST_CHANNEL_ID is not set")
+# STUDY_CHANNEL_ID = "C0ACQP6P3T2"
+STUDY_CHANNEL_ID = os.environ.get("TEST_CHANNEL_ID")
+if STUDY_CHANNEL_ID == 'C0ABVSK5QH0':
+    print("TEST_CHANNEL_ID is set")
+else:
+    print("TEST_CHANNEL_ID is not set")
 
 
 # Set your timezone here (e.g., 'America/Los_Angeles', 'America/New_York', 'America/Chicago')
@@ -38,11 +40,28 @@ UCI_LOCATIONS = [
     "Other",
 ]
 
-# session_id -> { user_id, user_name, location, end_ts }
+# session_id -> { user_id, user_name, location, end_ts, ... }
 active_sessions = {}
 
 # user_id -> list of { expired_at, session } for sessions that expired today
 expired_today = {}
+
+def _db():
+    get_firebase_app()
+    return firestore.client()
+
+def _add_study_seconds(user_id, seconds):
+    """Atomically add seconds to a user's study_hours document."""
+    if seconds <= 0:
+        return
+    _db().collection("study_hours").document(user_id).set(
+        {"total_seconds": firestore.Increment(seconds)},
+        merge=True,
+    )
+
+def _get_all_study_hours():
+    """Return {user_id: total_seconds} for all users."""
+    return {doc.id: doc.to_dict().get("total_seconds", 0) for doc in _db().collection("study_hours").stream()}
 
 VIBE_LABELS = {
     "lock_in": "🟥 Lock In",
@@ -60,15 +79,19 @@ def _build_announcement_text(session):
         f"{with_suffix} *{session['time_range']}*."
     )
 
-def _vibe_context_block(session):
-    """Return a context block for the vibe tag, or None if no vibe set."""
+def _meta_context_block(session):
+    """Return a context block with vibe and/or capacity info, or None if neither is set."""
+    elements = []
     vibe = session.get("vibe")
-    if vibe not in VIBE_LABELS:
+    if vibe in VIBE_LABELS:
+        elements.append({"type": "mrkdwn", "text": VIBE_LABELS[vibe]})
+    capacity = session.get("capacity")
+    if capacity:
+        taken = len(session.get("participants", []))
+        elements.append({"type": "mrkdwn", "text": f"👥 {taken}/{capacity} spots"})
+    if not elements:
         return None
-    return {
-        "type": "context",
-        "elements": [{"type": "mrkdwn", "text": VIBE_LABELS[vibe]}],
-    }
+    return {"type": "context", "elements": elements}
 
 def _build_full_text(session):
     base = _build_announcement_text(session)
@@ -94,6 +117,9 @@ def _clean_expired_sessions(client=None):
             if user_id not in expired_today:
                 expired_today[user_id] = []
             expired_today[user_id].append({"expired_at": s["end_ts"], "session": dict(s)})
+        # Accumulate studied time
+        if s.get("created_ts"):
+            _add_study_seconds(user_id, s["end_ts"] - s["created_ts"])
         channel_id = s.get("channel_id")
         message_ts = s.get("message_ts")
         if client and channel_id and message_ts:
@@ -176,7 +202,7 @@ def _extend_session(client, sid, minutes, response_url=None):
                 "alt_text": f"Study spot photo from {session.get('user_name','')}",
                 "block_id": "study_image_block",
             })
-        vibe_block = _vibe_context_block(session)
+        vibe_block = _meta_context_block(session)
         if vibe_block:
             blocks.append(vibe_block)
         blocks.append({
@@ -214,6 +240,12 @@ def _extend_session(client, sid, minutes, response_url=None):
     session["reminder_sent"] = False
 
 
+
+def _accumulate_hours_on_cancel(session):
+    """Credit the user for time studied up to now when a session is cancelled early."""
+    if session.get("created_ts"):
+        elapsed = min(time.time(), session["end_ts"]) - session["created_ts"]
+        _add_study_seconds(session["user_id"], elapsed)
 
 def _get_user_session(user_id):
     """Return (session_id, session) for user's current active session, or (None, None)."""
@@ -258,6 +290,7 @@ def _build_study_modal_blocks(session_data=None):
     description_value = ""
     participants_value = []
     vibe_value = None
+    capacity_value = None
 
     if session_data:
         # Extract location and "Other" if needed
@@ -278,6 +311,9 @@ def _build_study_modal_blocks(session_data=None):
 
         # Vibe tag
         vibe_value = session_data.get("vibe")
+
+        # Capacity
+        capacity_value = session_data.get("capacity")
 
         # Parse start/end times from time_range
         time_range = session_data.get("time_range", "")
@@ -383,6 +419,21 @@ def _build_study_modal_blocks(session_data=None):
                 **({"initial_option": {"text": {"type": "plain_text", "text": VIBE_LABELS[vibe_value]}, "value": vibe_value}} if vibe_value in VIBE_LABELS else {}),
             },
             "label": {"type": "plain_text", "text": "Vibe"},
+        },
+        {
+            "type": "input",
+            "block_id": "capacity_block",
+            "optional": True,
+            "element": {
+                "type": "number_input",
+                "action_id": "capacity_input",
+                "is_decimal_allowed": False,
+                "min_value": "1",
+                "max_value": "50",
+                "placeholder": {"type": "plain_text", "text": "e.g. 4"},
+                **({"initial_value": str(capacity_value)} if capacity_value else {}),
+            },
+            "label": {"type": "plain_text", "text": "Capacity (max spots)"},
         },
         {"type": "header", "block_id": "start_time_header", "text": {"type": "plain_text", "text": "Start time", "emoji": True}},
         {
@@ -528,6 +579,7 @@ def register_study_handlers(app):
                         text="You don't have an active study session to cancel.",
                     )
                     return
+                _accumulate_hours_on_cancel(existing_session)
                 del active_sessions[existing_sid]
                 channel_id = existing_session.get("channel_id")
                 message_ts = existing_session.get("message_ts")
@@ -541,6 +593,62 @@ def register_study_handlers(app):
                     channel=body["channel_id"],
                     user=user_id,
                     text="Your study session has been cancelled.",
+                )
+                return
+
+            # /study extend — send extend buttons for the active session
+            if body.get("text", "").strip().lower() == "extend":
+                existing_sid, existing_session = _get_user_session(user_id)
+                if not existing_sid:
+                    client.chat_postEphemeral(
+                        channel=body["channel_id"],
+                        user=user_id,
+                        text="You don't have an active study session to extend.",
+                    )
+                    return
+                client.chat_postEphemeral(
+                    channel=body["channel_id"],
+                    user=user_id,
+                    text="Extend your study session:",
+                    blocks=[
+                        {"type": "section", "text": {"type": "mrkdwn", "text": f"Extend your session at *{existing_session['location']}*?"}},
+                        {
+                            "type": "actions",
+                            "block_id": "study_extend_actions",
+                            "elements": [
+                                {"type": "button", "text": {"type": "plain_text", "text": "Extend 30 mins"}, "action_id": "study_extend_30", "value": existing_sid},
+                                {"type": "button", "text": {"type": "plain_text", "text": "Extend 1 hour"}, "action_id": "study_extend_60", "value": existing_sid},
+                            ],
+                        },
+                    ],
+                )
+                return
+
+            # /study leaderboard — post the top studied hours publicly
+            if body.get("text", "").strip().lower() == "leaderboard":
+                all_hours = _get_all_study_hours()
+                if not all_hours:
+                    client.chat_postEphemeral(
+                        channel=body["channel_id"],
+                        user=user_id,
+                        text="No study hours tracked yet. Start a session with `/study`!",
+                    )
+                    return
+                sorted_users = sorted(all_hours.items(), key=lambda x: x[1], reverse=True)[:10]
+                medals = ["🥇", "🥈", "🥉"]
+                lines = []
+                for i, (uid, secs) in enumerate(sorted_users):
+                    hours, rem = divmod(int(secs), 3600)
+                    mins = rem // 60
+                    rank = medals[i] if i < 3 else f"{i + 1}."
+                    duration = f"{hours}h {mins}m" if hours else f"{mins}m"
+                    lines.append(f"{rank} <@{uid}> — {duration}")
+                text = "*🏆 Study Leaderboard*\n" + "\n".join(lines)
+                client.chat_postEphemeral(
+                    channel=body["channel_id"],
+                    user=user_id,
+                    text=text,
+                    blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
                 )
                 return
 
@@ -610,6 +718,9 @@ def register_study_handlers(app):
         vibe_block = view["state"]["values"].get("vibe_block") or {}
         vibe_opt = (vibe_block.get("vibe_input") or {}).get("selected_option")
         vibe = vibe_opt["value"] if vibe_opt else None
+
+        capacity_raw = ((view["state"]["values"].get("capacity_block") or {}).get("capacity_input") or {}).get("value")
+        capacity = int(capacity_raw) if capacity_raw else None
 
         # Handle image upload
         image_block = view["state"]["values"].get("image_block") or {}
@@ -699,8 +810,10 @@ def register_study_handlers(app):
                 "participants": [user_id] + list(selected_user_ids),
                 "description": description,
                 "vibe": vibe,
+                "capacity": capacity,
                 "channel_id": channel_id,
                 "message_ts": message_ts,
+                "created_ts": time.time(),
                 "reminder_sent": False,
             }
             session = active_sessions[session_id]
@@ -710,7 +823,7 @@ def register_study_handlers(app):
             if image_url:
                 blocks.append({"type": "divider"})
                 blocks.append({"type": "image", "image_url": image_url, "alt_text": f"Study spot photo from {user_name}", "block_id": "study_image_block"})
-            vibe_block = _vibe_context_block(session)
+            vibe_block = _meta_context_block(session)
             if vibe_block:
                 blocks.append(vibe_block)
             blocks.append({
@@ -758,6 +871,7 @@ def register_study_handlers(app):
                 "time_range": time_range,
                 "end_ts": end_ts,
                 "vibe": vibe,
+                "capacity": capacity,
                 "reminder_sent": False
             })
             # Update original message
@@ -770,7 +884,7 @@ def register_study_handlers(app):
                 if image_url:
                     blocks.append({"type": "divider"})
                     blocks.append({"type": "image", "image_url": image_url, "alt_text": f"Study spot photo from {user_name}", "block_id": "study_image_block"})
-                vibe_block = _vibe_context_block(session)
+                vibe_block = _meta_context_block(session)
                 if vibe_block:
                     blocks.append(vibe_block)
                 blocks.append({
@@ -804,8 +918,10 @@ def register_study_handlers(app):
             "participants": [user_id] + list(selected_user_ids),
             "description": description,
             "vibe": vibe,
+            "capacity": capacity,
             "channel_id": channel_id,
             "message_ts": None,
+            "created_ts": time.time(),
             "reminder_sent": False,
         }
 
@@ -817,7 +933,7 @@ def register_study_handlers(app):
         if image_url:
             blocks.append({"type": "divider"})
             blocks.append({"type": "image", "image_url": image_url, "alt_text": f"Study spot photo from {user_name}", "block_id": "study_image_block"})
-        vibe_block = _vibe_context_block(active_sessions[session_id])
+        vibe_block = _meta_context_block(active_sessions[session_id])
         if vibe_block:
             blocks.append(vibe_block)
         blocks.append({
@@ -915,6 +1031,7 @@ def register_study_handlers(app):
         channel_id = session.get("channel_id")
         message_ts = session.get("message_ts")
         user_id = session["user_id"]
+        _accumulate_hours_on_cancel(session)
         del active_sessions[session_id]
         if channel_id and message_ts:
             _update_message_cancelled(client, channel_id, message_ts, session)
@@ -945,6 +1062,7 @@ def register_study_handlers(app):
         # Cancel the session
         if session_id in active_sessions:
             session = active_sessions.pop(session_id)
+            _accumulate_hours_on_cancel(session)
             channel_id = session.get("channel_id")
             message_ts = session.get("message_ts")
             if channel_id and message_ts:
@@ -1062,7 +1180,7 @@ def register_study_handlers(app):
                 "block_id": "study_image_block",
             })
 
-        vibe_block = _vibe_context_block(session)
+        vibe_block = _meta_context_block(session)
         if vibe_block:
             blocks.append(vibe_block)
 

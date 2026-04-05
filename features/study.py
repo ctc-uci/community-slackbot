@@ -1,4 +1,5 @@
 """Study location bot: share where you're studying, tag others, cancel, list who's studying."""
+import json
 import os
 import threading
 import time
@@ -489,6 +490,12 @@ def register_study_handlers(app):
                     most_recent = max(user_expired, key=lambda e: e["expired_at"])
                     expired_session = dict(most_recent["session"])
                     expired_session.pop("time_range", None)
+                    meta = json.dumps({
+                        "reactivate": True,
+                        "channel_id": most_recent["session"].get("channel_id"),
+                        "message_ts": most_recent["session"].get("message_ts"),
+                        "image_url": most_recent["session"].get("image_url"),
+                    })
                     client.views_open(
                         trigger_id=trigger_id,
                         view={
@@ -496,7 +503,7 @@ def register_study_handlers(app):
                             "callback_id": "study_modal",
                             "title": {"type": "plain_text", "text": "Reactivate study session"},
                             "submit": {"type": "plain_text", "text": "Reactivate"},
-                            "private_metadata": "",
+                            "private_metadata": meta,
                             "blocks": _build_study_modal_blocks(session_data=expired_session),
                         },
                     )
@@ -621,10 +628,17 @@ def register_study_handlers(app):
                 if pub_secret:
                     image_url = f"{url_private}?pub_secret={pub_secret}"
         else:
-            # No new file uploaded: preserve existing image if editing
-            session_id = view.get("private_metadata")
-            if session_id and session_id in active_sessions:
-                image_url = active_sessions[session_id].get("image_url")
+            # No new file uploaded: preserve existing image if editing/reactivating
+            raw_meta = view.get("private_metadata") or ""
+            try:
+                meta = json.loads(raw_meta)
+                if meta.get("reactivate"):
+                    image_url = meta.get("image_url")
+                elif raw_meta in active_sessions:
+                    image_url = active_sessions[raw_meta].get("image_url")
+            except (json.JSONDecodeError, TypeError):
+                if raw_meta in active_sessions:
+                    image_url = active_sessions[raw_meta].get("image_url")
 
         def _get_select(block_id, action_id, default=None):
             obj = (view["state"]["values"].get(block_id) or {}).get(action_id) or {}
@@ -659,6 +673,73 @@ def register_study_handlers(app):
         start_str = start_dt.strftime("%-I:%M %p") if os.name != "nt" else start_dt.strftime("%I:%M %p")
         end_str = end_dt.strftime("%-I:%M %p") if os.name != "nt" else end_dt.strftime("%I:%M %p")
         time_range = f"{start_str} – {end_str}"
+
+        # ------------------------
+        # Check if reactivating an expired session
+        # ------------------------
+        raw_meta = view.get("private_metadata") or ""
+        try:
+            meta = json.loads(raw_meta)
+        except (json.JSONDecodeError, TypeError):
+            meta = {}
+
+        if meta.get("reactivate"):
+            channel_id = meta["channel_id"]
+            message_ts = meta["message_ts"]
+            session_id = str(uuid.uuid4())
+            active_sessions[session_id] = {
+                "user_id": user_id,
+                "user_name": user_name,
+                "location": location,
+                "time_range": time_range,
+                "end_ts": end_ts,
+                "image_url": image_url,
+                "participants": [user_id] + list(selected_user_ids),
+                "description": description,
+                "vibe": vibe,
+                "channel_id": channel_id,
+                "message_ts": message_ts,
+                "reminder_sent": False,
+            }
+            session = active_sessions[session_id]
+            blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": _build_announcement_text(session)}}]
+            if description:
+                blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"_{description}_"}})
+            if image_url:
+                blocks.append({"type": "divider"})
+                blocks.append({"type": "image", "image_url": image_url, "alt_text": f"Study spot photo from {user_name}", "block_id": "study_image_block"})
+            vibe_block = _vibe_context_block(session)
+            if vibe_block:
+                blocks.append(vibe_block)
+            blocks.append({
+                "type": "actions",
+                "block_id": "study_join_actions",
+                "elements": [
+                    {"type": "button", "text": {"type": "plain_text", "text": "🙋 Join"}, "action_id": "study_join", "value": session_id}
+                ]
+            })
+            client.chat_update(channel=channel_id, ts=message_ts, text=_build_announcement_text(session), blocks=blocks)
+            try:
+                client.pins_add(channel=channel_id, timestamp=message_ts)
+            except Exception:
+                pass
+            client.chat_postEphemeral(
+                channel=channel_id,
+                user=user_id,
+                text="Manage your study announcement",
+                blocks=[
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "Your study session has been reactivated:"}},
+                    {
+                        "type": "actions",
+                        "block_id": "study_ephemeral_actions",
+                        "elements": [
+                            {"type": "button", "text": {"type": "plain_text", "text": "Cancel announcement"}, "action_id": "study_cancel", "value": session_id, "style": "danger"},
+                            {"type": "button", "text": {"type": "plain_text", "text": "Edit announcement"}, "action_id": "study_edit", "value": session_id, "style": "primary"},
+                        ],
+                    },
+                ],
+            )
+            return
 
         # ------------------------
         # Check if editing existing session

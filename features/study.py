@@ -12,8 +12,12 @@ import pytz
 # Channel where announcements are posted
 # Use TEST_CHANNEL_ID if ENV is "development", otherwise use the hardcoded channel
 
-STUDY_CHANNEL_ID = "C0ACQP6P3T2"
-# STUDY_CHANNEL_ID = os.environ.get("TEST_CHANNEL_ID")
+# STUDY_CHANNEL_ID = "C0ACQP6P3T2"
+STUDY_CHANNEL_ID = os.environ.get("TEST_CHANNEL_ID")
+if STUDY_CHANNEL_ID == 'C0ABVSK5QH0':
+    print("TEST_CHANNEL_ID is set")
+else:
+    print("TEST_CHANNEL_ID is not set")
 
 
 # Set your timezone here (e.g., 'America/Los_Angeles', 'America/New_York', 'America/Chicago')
@@ -37,15 +41,23 @@ active_sessions = {}
 # user_id -> list of { expired_at, session } for sessions that expired today
 expired_today = {}
 
+VIBE_LABELS = {
+    "lock_in": "🟥 Lock In",
+    "chill_vibes": "🟦 Chill Vibes",
+}
+
 def _build_announcement_text(session):
     names = session["participants"]
     with_suffix = ""
     if len(names) > 1:
         with_suffix = " with " + " ".join(f"<@{uid}>" for uid in names[1:])
 
+    vibe = session.get("vibe")
+    vibe_suffix = f"  ·  {VIBE_LABELS[vibe]}" if vibe in VIBE_LABELS else ""
+
     return (
         f"📍 <@{names[0]}> is studying at *{session['location']}*"
-        f"{with_suffix} *{session['time_range']}*."
+        f"{with_suffix} *{session['time_range']}*{vibe_suffix}."
     )
 
 def _build_full_text(session):
@@ -232,6 +244,7 @@ def _build_study_modal_blocks(session_data=None):
     other_location_value = None
     description_value = ""
     participants_value = []
+    vibe_value = None
 
     if session_data:
         # Extract location and "Other" if needed
@@ -249,6 +262,9 @@ def _build_study_modal_blocks(session_data=None):
 
         # Participants (exclude owner)
         participants_value = [uid for uid in session_data.get("participants", []) if uid != session_data.get("user_id")]
+
+        # Vibe tag
+        vibe_value = session_data.get("vibe")
 
         # Parse start/end times from time_range
         time_range = session_data.get("time_range", "")
@@ -339,6 +355,21 @@ def _build_study_modal_blocks(session_data=None):
                 "filetypes": ["png", "jpg", "jpeg", "gif", "webp"],
             },
             "label": {"type": "plain_text", "text": "Share a photo to show your study spot"},
+        },
+        {
+            "type": "input",
+            "block_id": "vibe_block",
+            "optional": True,
+            "element": {
+                "type": "radio_buttons",
+                "action_id": "vibe_input",
+                "options": [
+                    {"text": {"type": "plain_text", "text": "🟥 Lock In"}, "value": "lock_in"},
+                    {"text": {"type": "plain_text", "text": "🟦 Chill Vibes"}, "value": "chill_vibes"},
+                ],
+                **({"initial_option": {"text": {"type": "plain_text", "text": VIBE_LABELS[vibe_value]}, "value": vibe_value}} if vibe_value in VIBE_LABELS else {}),
+            },
+            "label": {"type": "plain_text", "text": "Vibe"},
         },
         {"type": "header", "block_id": "start_time_header", "text": {"type": "plain_text", "text": "Start time", "emoji": True}},
         {
@@ -514,6 +545,10 @@ def register_study_handlers(app):
         description_raw = (description_block.get("description_input") or {}).get("value") or ""
         description = description_raw.strip() if isinstance(description_raw, str) else ""
 
+        vibe_block = view["state"]["values"].get("vibe_block") or {}
+        vibe_opt = (vibe_block.get("vibe_input") or {}).get("selected_option")
+        vibe = vibe_opt["value"] if vibe_opt else None
+
         # Handle image upload
         image_block = view["state"]["values"].get("image_block") or {}
         image_obj = image_block.get("image_input") or {}
@@ -586,6 +621,7 @@ def register_study_handlers(app):
                 "participants": [user_id] + list(selected_user_ids),
                 "time_range": time_range,
                 "end_ts": end_ts,
+                "vibe": vibe,
                 "reminder_sent": False
             })
             # Update original message
@@ -628,6 +664,7 @@ def register_study_handlers(app):
             "image_url": image_url,
             "participants": [user_id] + list(selected_user_ids),
             "description": description,
+            "vibe": vibe,
             "channel_id": channel_id,
             "message_ts": None,
             "reminder_sent": False,

@@ -640,6 +640,34 @@ def register_study_handlers(app):
                 )
                 return
 
+            # /study help — show all available commands
+            if body.get("text", "").strip().lower() == "help":
+                help_text = (
+                    "*📚 Study Session Commands*\n\n"
+                    "*Starting & Managing*\n"
+                    "• `/study` — announce a new study session\n"
+                    "• `/study edit` — edit your current session\n"
+                    "• `/study cancel` — cancel your current session\n"
+                    "• `/study extend` — extend your session by 30 mins or 1 hour\n"
+                    "• `/study reactivate` — bring back a session that ended earlier today\n\n"
+                    "*Discovery*\n"
+                    "• `/study who` — see everyone currently studying with join buttons\n"
+                    "• `/study map` — emoji map of campus showing active study spots\n\n"
+                    "*Stats*\n"
+                    "• `/study leaderboard` — top studiers by total hours\n\n"
+                    "*Session Options*\n"
+                    "• 🟥 *Lock In* — heads down, no distractions\n"
+                    "• 🟦 *Chill Vibes* — come hang, conversation welcome\n"
+                    "• *Capacity* — set a max number of spots for your session"
+                )
+                client.chat_postEphemeral(
+                    channel=body["channel_id"],
+                    user=user_id,
+                    text=help_text,
+                    blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": help_text}}],
+                )
+                return
+
             # /study who — list everyone currently studying with join buttons
             if body.get("text", "").strip().lower() == "who":
                 _clean_expired_sessions(client)

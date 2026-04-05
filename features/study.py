@@ -40,6 +40,22 @@ UCI_LOCATIONS = [
     "Other",
 ]
 
+# Groups for /study map display
+CAMPUS_AREAS = [
+    ("📚 Libraries",    ["Langson Library", "Science Library"]),
+    ("🏛 Central",      ["Gateway Study Center", "Student Center", "ALP", "Humanities Gateway 2nd Floor (Ryan's Secret Spot)"]),
+    ("⚙️ Engineering",  ["DBH", "ISEB", "CSL", "Engineering Quad"]),
+]
+
+def _base_location(location):
+    """Map a session location back to its UCI_LOCATIONS entry."""
+    for known in UCI_LOCATIONS:
+        if known == "Other":
+            continue
+        if location == known or location.startswith(known + " —") or location.startswith(known + "—"):
+            return known
+    return "Other"
+
 # session_id -> { user_id, user_name, location, end_ts, ... }
 active_sessions = {}
 
@@ -621,6 +637,54 @@ def register_study_handlers(app):
                             ],
                         },
                     ],
+                )
+                return
+
+            # /study map — emoji map of who's studying where right now
+            if body.get("text", "").strip().lower() == "map":
+                _clean_expired_sessions(client)
+
+                # Count people per base location
+                counts = {}
+                vibes = {}
+                for s in active_sessions.values():
+                    base = _base_location(s["location"])
+                    counts[base] = counts.get(base, 0) + len(s.get("participants", []))
+                    if s.get("vibe") and base not in vibes:
+                        vibes[base] = s["vibe"]
+
+                total = sum(counts.values())
+                header = f"🗺  *UCI Study Map*  ·  {total} {'person' if total == 1 else 'people'} studying right now"
+
+                area_lines = []
+                for area_name, locations in CAMPUS_AREAS:
+                    rows = []
+                    for loc in locations:
+                        count = counts.get(loc, 0)
+                        if count == 0:
+                            indicator = "⬜"
+                        else:
+                            dots = "🟢" * min(count, 5)
+                            indicator = dots + (f" +{count - 5}" if count > 5 else "")
+                        vibe_tag = f"  {VIBE_LABELS[vibes[loc]]}" if loc in vibes else ""
+                        rows.append(f"  {indicator}  {loc}{vibe_tag}")
+                    area_lines.append(f"*{area_name}*\n" + "\n".join(rows))
+
+                # Tack on any "Other" sessions
+                other_locs = {
+                    s["location"]: len(s.get("participants", []))
+                    for s in active_sessions.values()
+                    if _base_location(s["location"]) == "Other"
+                }
+                if other_locs:
+                    rows = [f"  {'🟢' * min(n, 5)}  {loc}" for loc, n in other_locs.items()]
+                    area_lines.append("*📌 Elsewhere*\n" + "\n".join(rows))
+
+                map_text = header + "\n\n" + "\n\n".join(area_lines)
+                client.chat_postMessage(
+                    channel=body["channel_id"],
+                    text=map_text,
+                    blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": map_text}}],
                 )
                 return
 

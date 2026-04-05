@@ -1,0 +1,23 @@
+features/study.py
+  4fee2e00b5c717e6 684,686
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "0f5d72aa825226123567d8240068a07b6dc1f523",
+  "prompts": {
+    "4fee2e00b5c717e6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fe35c306-3a49-4af4-9c69-b9b7de1c5073",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Brendan Lieu",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 1,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    }
+  }
+}

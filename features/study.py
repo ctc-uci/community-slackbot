@@ -449,7 +449,7 @@ def register_study_handlers(app):
             user_id = body["user_id"]
             _clean_expired_sessions(client)
 
-            # /study edit — edit active session or reactivate a past one from today
+            # /study edit — edit active session only
             if body.get("text", "").strip().lower() == "edit":
                 existing_sid, existing_session = _get_user_session(user_id)
                 if existing_sid:
@@ -466,11 +466,28 @@ def register_study_handlers(app):
                     )
                     return
 
+                client.chat_postEphemeral(
+                    channel=body["channel_id"],
+                    user=user_id,
+                    text="You don't have an active study session. Use `/study reactivate` to bring back a past one.",
+                )
+                return
+
+            # /study reactivate — reactivate an expired session from today
+            if body.get("text", "").strip().lower() == "reactivate":
+                existing_sid, _ = _get_user_session(user_id)
+                if existing_sid:
+                    client.chat_postEphemeral(
+                        channel=body["channel_id"],
+                        user=user_id,
+                        text="You already have an active study session. Use `/study edit` to modify it.",
+                    )
+                    return
+
                 user_expired = expired_today.get(user_id, [])
                 if user_expired:
                     most_recent = max(user_expired, key=lambda e: e["expired_at"])
                     expired_session = dict(most_recent["session"])
-                    # Clear time_range so times default to now + 1hr in the modal
                     expired_session.pop("time_range", None)
                     client.views_open(
                         trigger_id=trigger_id,
@@ -479,7 +496,7 @@ def register_study_handlers(app):
                             "callback_id": "study_modal",
                             "title": {"type": "plain_text", "text": "Reactivate study session"},
                             "submit": {"type": "plain_text", "text": "Reactivate"},
-                            "private_metadata": "",  # empty = create new session on submit
+                            "private_metadata": "",
                             "blocks": _build_study_modal_blocks(session_data=expired_session),
                         },
                     )
@@ -488,7 +505,7 @@ def register_study_handlers(app):
                 client.chat_postEphemeral(
                     channel=body["channel_id"],
                     user=user_id,
-                    text="No active or recent study sessions to edit. Use `/study` to start a new one.",
+                    text="No study sessions from today to reactivate. Use `/study` to start a new one.",
                 )
                 return
 

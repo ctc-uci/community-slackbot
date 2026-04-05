@@ -52,13 +52,20 @@ def _build_announcement_text(session):
     if len(names) > 1:
         with_suffix = " with " + " ".join(f"<@{uid}>" for uid in names[1:])
 
-    vibe = session.get("vibe")
-    vibe_suffix = f"  ·  {VIBE_LABELS[vibe]}" if vibe in VIBE_LABELS else ""
-
     return (
         f"📍 <@{names[0]}> is studying at *{session['location']}*"
-        f"{with_suffix} *{session['time_range']}*{vibe_suffix}."
+        f"{with_suffix} *{session['time_range']}*."
     )
+
+def _vibe_context_block(session):
+    """Return a context block for the vibe tag, or None if no vibe set."""
+    vibe = session.get("vibe")
+    if vibe not in VIBE_LABELS:
+        return None
+    return {
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": VIBE_LABELS[vibe]}],
+    }
 
 def _build_full_text(session):
     base = _build_announcement_text(session)
@@ -166,6 +173,9 @@ def _extend_session(client, sid, minutes, response_url=None):
                 "alt_text": f"Study spot photo from {session.get('user_name','')}",
                 "block_id": "study_image_block",
             })
+        vibe_block = _vibe_context_block(session)
+        if vibe_block:
+            blocks.append(vibe_block)
         blocks.append({
             "type": "actions",
             "block_id": "study_join_actions",
@@ -634,6 +644,9 @@ def register_study_handlers(app):
                 if image_url:
                     blocks.append({"type": "divider"})
                     blocks.append({"type": "image", "image_url": image_url, "alt_text": f"Study spot photo from {user_name}", "block_id": "study_image_block"})
+                vibe_block = _vibe_context_block(session)
+                if vibe_block:
+                    blocks.append(vibe_block)
                 blocks.append({
                     "type": "actions",
                     "block_id": "study_join_actions",
@@ -678,6 +691,9 @@ def register_study_handlers(app):
         if image_url:
             blocks.append({"type": "divider"})
             blocks.append({"type": "image", "image_url": image_url, "alt_text": f"Study spot photo from {user_name}", "block_id": "study_image_block"})
+        vibe_block = _vibe_context_block(active_sessions[session_id])
+        if vibe_block:
+            blocks.append(vibe_block)
         blocks.append({
             "type": "actions",
             "block_id": "study_join_actions",
@@ -919,6 +935,10 @@ def register_study_handlers(app):
                 "alt_text": f"Study spot photo from {session.get('user_name','')}",
                 "block_id": "study_image_block",
             })
+
+        vibe_block = _vibe_context_block(session)
+        if vibe_block:
+            blocks.append(vibe_block)
 
         blocks.append({
             "type": "actions",

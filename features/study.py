@@ -681,8 +681,9 @@ def register_study_handlers(app):
                     area_lines.append("*📌 Elsewhere*\n" + "\n".join(rows))
 
                 map_text = header + "\n\n" + "\n\n".join(area_lines)
-                client.chat_postMessage(
+                client.chat_postEphemeral(
                     channel=body["channel_id"],
+                    user=user_id,
                     text=map_text,
                     blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": map_text}}],
                 )

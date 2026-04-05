@@ -640,6 +640,59 @@ def register_study_handlers(app):
                 )
                 return
 
+            # /study who — list everyone currently studying with join buttons
+            if body.get("text", "").strip().lower() == "who":
+                _clean_expired_sessions(client)
+
+                if not active_sessions:
+                    client.chat_postEphemeral(
+                        channel=body["channel_id"],
+                        user=user_id,
+                        text="Nobody is studying right now. Be the first with `/study`!",
+                    )
+                    return
+
+                now = time.time()
+                blocks = [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*📚 {len(active_sessions)} {'person' if len(active_sessions) == 1 else 'people'} studying right now*"}},
+                    {"type": "divider"},
+                ]
+
+                for sid, s in active_sessions.items():
+                    mins_left = int((s["end_ts"] - now) / 60)
+                    if mins_left >= 60:
+                        hrs, mins = divmod(mins_left, 60)
+                        time_left = f"{hrs}h {mins}m left" if mins else f"{hrs}h left"
+                    else:
+                        time_left = f"{mins_left}m left"
+
+                    vibe_str = f"  ·  {VIBE_LABELS[s['vibe']]}" if s.get("vibe") in VIBE_LABELS else ""
+                    participants = s.get("participants", [])
+                    with_str = ""
+                    if len(participants) > 1:
+                        with_str = "  ·  with " + " ".join(f"<@{uid}>" for uid in participants[1:])
+
+                    text = f"<@{participants[0]}> at *{s['location']}*{with_str}\n⏱ {time_left}{vibe_str}"
+
+                    blocks.append({
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": text},
+                        "accessory": {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "🙋 Join"},
+                            "action_id": "study_join",
+                            "value": sid,
+                        },
+                    })
+
+                client.chat_postEphemeral(
+                    channel=body["channel_id"],
+                    user=user_id,
+                    text="People currently studying:",
+                    blocks=blocks,
+                )
+                return
+
             # /study map — emoji map of who's studying where right now
             if body.get("text", "").strip().lower() == "map":
                 _clean_expired_sessions(client)

@@ -509,6 +509,32 @@ def register_study_handlers(app):
                 )
                 return
 
+            # /study cancel — cancel the current active session
+            if body.get("text", "").strip().lower() == "cancel":
+                existing_sid, existing_session = _get_user_session(user_id)
+                if not existing_sid:
+                    client.chat_postEphemeral(
+                        channel=body["channel_id"],
+                        user=user_id,
+                        text="You don't have an active study session to cancel.",
+                    )
+                    return
+                del active_sessions[existing_sid]
+                channel_id = existing_session.get("channel_id")
+                message_ts = existing_session.get("message_ts")
+                if channel_id and message_ts:
+                    _update_message_cancelled(client, channel_id, message_ts, existing_session)
+                    try:
+                        client.pins_remove(channel=channel_id, timestamp=message_ts)
+                    except Exception:
+                        pass
+                client.chat_postEphemeral(
+                    channel=body["channel_id"],
+                    user=user_id,
+                    text="Your study session has been cancelled.",
+                )
+                return
+
             existing_sid, existing_session = _get_user_session(user_id)
             if existing_sid is not None:
                 _open_already_studying_modal(trigger_id, existing_sid, existing_session, client)

@@ -133,9 +133,12 @@ def _clean_expired_sessions(client=None):
             if user_id not in expired_today:
                 expired_today[user_id] = []
             expired_today[user_id].append({"expired_at": s["end_ts"], "session": dict(s)})
-        # Accumulate studied time
+        # Accumulate studied time for all participants
         if s.get("created_ts"):
-            _add_study_seconds(user_id, s["end_ts"] - s["created_ts"])
+            join_times = s.get("join_times", {user_id: s["created_ts"]})
+            for uid in s.get("participants", [user_id]):
+                start = join_times.get(uid, s["created_ts"])
+                _add_study_seconds(uid, s["end_ts"] - start)
         channel_id = s.get("channel_id")
         message_ts = s.get("message_ts")
         if client and channel_id and message_ts:
@@ -258,10 +261,15 @@ def _extend_session(client, sid, minutes, response_url=None):
 
 
 def _accumulate_hours_on_cancel(session):
-    """Credit the user for time studied up to now when a session is cancelled early."""
-    if session.get("created_ts"):
-        elapsed = min(time.time(), session["end_ts"]) - session["created_ts"]
-        _add_study_seconds(session["user_id"], elapsed)
+    """Credit all participants for time studied up to now when a session is cancelled early."""
+    if not session.get("created_ts"):
+        return
+    now = min(time.time(), session["end_ts"])
+    join_times = session.get("join_times", {session["user_id"]: session["created_ts"]})
+    for uid in session.get("participants", [session["user_id"]]):
+        start = join_times.get(uid, session["created_ts"])
+        elapsed = now - start
+        _add_study_seconds(uid, elapsed)
 
 def _get_user_session(user_id):
     """Return (session_id, session) for user's current active session, or (None, None)."""
@@ -946,6 +954,8 @@ def register_study_handlers(app):
             channel_id = meta["channel_id"]
             message_ts = meta["message_ts"]
             session_id = str(uuid.uuid4())
+            reactivate_ts = time.time()
+            reactivate_participants = [user_id] + list(selected_user_ids)
             active_sessions[session_id] = {
                 "user_id": user_id,
                 "user_name": user_name,
@@ -953,13 +963,14 @@ def register_study_handlers(app):
                 "time_range": time_range,
                 "end_ts": end_ts,
                 "image_url": image_url,
-                "participants": [user_id] + list(selected_user_ids),
+                "participants": reactivate_participants,
                 "description": description,
                 "vibe": vibe,
                 "capacity": capacity,
                 "channel_id": channel_id,
                 "message_ts": message_ts,
-                "created_ts": time.time(),
+                "created_ts": reactivate_ts,
+                "join_times": {uid: reactivate_ts for uid in reactivate_participants},
                 "reminder_sent": False,
             }
             session = active_sessions[session_id]
@@ -1009,11 +1020,16 @@ def register_study_handlers(app):
         if session_id and session_id in active_sessions:
             # Update existing session
             session = active_sessions[session_id]
+            new_participants = [user_id] + list(selected_user_ids)
+            existing_join_times = session.get("join_times", {user_id: session.get("created_ts", time.time())})
+            now_ts = time.time()
+            updated_join_times = {uid: existing_join_times.get(uid, now_ts) for uid in new_participants}
             session.update({
                 "location": location,
                 "description": description,
                 "image_url": image_url,
-                "participants": [user_id] + list(selected_user_ids),
+                "participants": new_participants,
+                "join_times": updated_join_times,
                 "time_range": time_range,
                 "end_ts": end_ts,
                 "vibe": vibe,
@@ -1054,6 +1070,8 @@ def register_study_handlers(app):
         session_id = str(uuid.uuid4())
         channel_id = STUDY_CHANNEL_ID
 
+        created_ts = time.time()
+        all_initial = [user_id] + list(selected_user_ids)
         active_sessions[session_id] = {
             "user_id": user_id,
             "user_name": user_name,
@@ -1061,13 +1079,14 @@ def register_study_handlers(app):
             "time_range": time_range,
             "end_ts": end_ts,
             "image_url": image_url,
-            "participants": [user_id] + list(selected_user_ids),
+            "participants": all_initial,
             "description": description,
             "vibe": vibe,
             "capacity": capacity,
             "channel_id": channel_id,
             "message_ts": None,
-            "created_ts": time.time(),
+            "created_ts": created_ts,
+            "join_times": {uid: created_ts for uid in all_initial},
             "reminder_sent": False,
         }
 
@@ -1311,7 +1330,9 @@ def register_study_handlers(app):
 
         if user_id not in session["participants"]:
             session["participants"].append(user_id)
-        # session["participants"].append(user_id)
+            if "join_times" not in session:
+                session["join_times"] = {session["user_id"]: session.get("created_ts", time.time())}
+            session["join_times"][user_id] = time.time()
 
         full_text = _build_full_text(session)
 

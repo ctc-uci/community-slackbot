@@ -513,6 +513,21 @@ def _handle_report(body, client, respond):
         _ephemeral(respond, "You have no assigned target.")
         return
 
+    # Check for a recent file upload from this player in #assassin-channel
+    evidence_link = None
+    try:
+        history = client.conversations_history(channel=ASSASSIN_CHANNEL_ID, limit=50)
+        for msg in history.get("messages", []):
+            if msg.get("user") == user_id and msg.get("files"):
+                evidence_link = msg["files"][0].get("permalink")
+                break
+    except Exception:
+        pass
+
+    if not evidence_link:
+        _ephemeral(respond, f"No evidence found. Post your video in <#{ASSASSIN_CHANNEL_ID}> first, then run `/assassin report`.")
+        return
+
     client.views_open(
         trigger_id=trigger_id,
         view={
@@ -521,7 +536,7 @@ def _handle_report(body, client, respond):
             "title": {"type": "plain_text", "text": "Report a Kill"},
             "submit": {"type": "plain_text", "text": "Submit Report"},
             "close": {"type": "plain_text", "text": "Cancel"},
-            "private_metadata": f"{user_id}|{target_id}|{round_id}",
+            "private_metadata": f"{user_id}|{target_id}|{round_id}|{evidence_link}",
             "blocks": [
                 {
                     "type": "section",
@@ -994,9 +1009,10 @@ def register_assassins_handlers(app):
                 user_id = body["user"]["id"]
                 private_metadata = body["view"]["private_metadata"]
                 parts = private_metadata.split("|")
-                if len(parts) != 3:
+                if len(parts) < 3:
                     return
-                reporter_id, target_id, round_id = parts
+                reporter_id, target_id, round_id = parts[0], parts[1], parts[2]
+                evidence_link = parts[3] if len(parts) > 3 and parts[3] != "None" else None
 
                 # Verify confirmation checked
                 values = body["view"]["state"]["values"]
@@ -1004,16 +1020,6 @@ def register_assassins_handlers(app):
                 if not checked:
                     return
 
-                # Auto-find most recent file posted by reporter in #assassin-channel
-                evidence_link = None
-                try:
-                    history = client.conversations_history(channel=ASSASSIN_CHANNEL_ID, limit=50)
-                    for msg in history.get("messages", []):
-                        if msg.get("user") == reporter_id and msg.get("files"):
-                            evidence_link = msg["files"][0].get("permalink")
-                            break
-                except Exception:
-                    pass
 
                 report_id = str(uuid.uuid4())
                 _db().collection(COL_REPORTS).document(report_id).set({

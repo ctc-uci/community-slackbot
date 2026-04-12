@@ -662,6 +662,47 @@ def _handle_end(body, client, respond):
     threading.Thread(target=run, daemon=True).start()
 
 
+def _handle_leave(body, client, respond):
+    user_id = body["user_id"]
+    state = _get_state()
+
+    if state["status"] != "pending":
+        if state["status"] == "active":
+            _ephemeral(respond, "The round is already in progress — you cannot leave once targets have been assigned.")
+        else:
+            _ephemeral(respond, "There is no pending round to leave.")
+        return
+
+    rnd = _get_round()
+    round_id = rnd["round_id"]
+
+    player = _get_player(user_id)
+    if not player or player.get("round_id") != round_id:
+        _ephemeral(respond, "You are not registered in the current round.")
+        return
+
+    _db().collection(COL_PLAYERS).document(user_id).delete()
+
+    players = _get_players_for_round(round_id)
+    n = len(players)
+
+    _ephemeral(respond, "You have left the Water Assassins round.")
+
+    client.chat_postMessage(
+        channel=ASSASSIN_CHANNEL_ID,
+        text=f"<@{user_id}> has left the game. ({n} player(s) remaining)",
+        blocks=[
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f":droplet: <@{user_id}> has left the game. *{n} player(s)* remaining.",
+                },
+            }
+        ],
+    )
+
+
 def _handle_players(body, client, respond):
     state = _get_state()
     rnd = _get_round()
@@ -688,6 +729,214 @@ def _handle_players(body, client, respond):
         lines.extend(f"• <@{p['user_id']}>" for p in pending)
 
     _ephemeral(respond, "\n".join(lines) if lines else "No active players.")
+
+
+# ---------------------------------------------------------------------------
+# Debug handlers
+# ---------------------------------------------------------------------------
+
+def _handle_debug(body, client, respond, raw_text):
+    """
+    Debug subcommands (ephemeral only — never posts to channel):
+      /assassin debug state        — dump round + all players + pending reports
+      /assassin debug assign       — force target assignment right now (skip 8am)
+      /assassin debug kill         — auto-validate a kill for you against your current target
+      /assassin debug reset        — wipe all Firestore game data and reset in-memory state
+    """
+    parts = raw_text.lower().split()
+    # parts: ["debug", <subcmd>]
+    subcmd = parts[1] if len(parts) > 1 else ""
+
+    if subcmd == "state":
+        _debug_state(respond)
+    elif subcmd == "assign":
+        _debug_assign(client, respond)
+    elif subcmd == "kill":
+        _debug_kill(body, client, respond)
+    elif subcmd == "reset":
+        _debug_reset(respond)
+    elif subcmd == "addbot":
+        parts2 = raw_text.split()
+        n = int(parts2[2]) if len(parts2) > 2 and parts2[2].isdigit() else 2
+        _debug_addbot(respond, n)
+    else:
+        _ephemeral(respond, (
+            "*Debug commands:*\n"
+            "• `/assassin debug state` — dump current round, players, and pending reports\n"
+            "• `/assassin debug assign` — force target assignment now (skips 8am)\n"
+            "• `/assassin debug kill` — instantly validate your kill against your current target\n"
+            "• `/assassin debug reset` — wipe all game data and reset state\n"
+            "• `/assassin debug addbot [n]` — add n fake bot players to the pending round (default 2)"
+        ))
+
+
+def _debug_state(respond):
+    rnd = _get_round()
+    state = _get_state()
+
+    if not rnd:
+        _ephemeral(respond, "No round document found in Firestore.")
+        return
+
+    lines = [
+        "*— Round —*",
+        f"round_id: `{rnd.get('round_id')}`",
+        f"status: `{rnd.get('status')}`",
+        f"gm_id: <@{rnd['gm_id']}>" if rnd.get('gm_id') else "gm_id: none",
+        f"start_date: `{rnd.get('start_date')}`",
+        f"start_ts: `{rnd.get('start_ts')}`",
+        f"in-memory status: `{state['status']}`",
+        "",
+        "*— Players —*",
+    ]
+
+    players = _get_players_for_round(rnd.get("round_id", ""))
+    if not players:
+        lines.append("(none)")
+    for p in players:
+        target = f"→ <@{p['target_id']}>" if p.get("target_id") else "→ none"
+        lines.append(
+            f"<@{p['user_id']}> [{p.get('status')}] {target}  kills={p.get('kills', 0)}"
+        )
+
+    lines += ["", "*— Pending kill reports —*"]
+    reports = list(
+        _db().collection(COL_REPORTS)
+        .where("round_id", "==", rnd.get("round_id", ""))
+        .where("status", "==", "pending")
+        .stream()
+    )
+    if not reports:
+        lines.append("(none)")
+    for r in reports:
+        d = r.to_dict()
+        lines.append(f"`{d['report_id'][:8]}…` <@{d['reporter_id']}> → <@{d['target_id']}>")
+
+    _ephemeral(respond, "\n".join(lines))
+
+
+def _debug_assign(client, respond):
+    state = _get_state()
+    if state["status"] != "pending":
+        _ephemeral(respond, f"Round is not pending (status: `{state['status']}`). Cannot force assign.")
+        return
+    _ephemeral(respond, "Forcing target assignment now…")
+    _assign_targets(client)
+    _ephemeral(respond, "Done. Check your DMs for your target.")
+
+
+def _debug_kill(body, client, respond):
+    user_id = body["user_id"]
+    state = _get_state()
+
+    if state["status"] != "active":
+        _ephemeral(respond, f"Round is not active (status: `{state['status']}`).")
+        return
+
+    player = _get_player(user_id)
+    if not player or player.get("status") != "alive":
+        _ephemeral(respond, "You are not an alive player in this round.")
+        return
+
+    target_id = player.get("target_id")
+    if not target_id:
+        _ephemeral(respond, "You have no assigned target.")
+        return
+
+    target_player = _get_player(target_id)
+    if not target_player or target_player.get("status") != "alive":
+        _ephemeral(respond, f"<@{target_id}> is already eliminated.")
+        return
+
+    new_target_id = target_player.get("target_id")
+    round_id = state["round_id"]
+
+    db = _db()
+    batch = db.batch()
+    batch.set(db.collection(COL_PLAYERS).document(target_id), {
+        "status": "eliminated", "killed_by": user_id,
+    }, merge=True)
+    batch.set(db.collection(COL_PLAYERS).document(user_id), {
+        "kills": firestore.Increment(1), "target_id": new_target_id,
+    }, merge=True)
+    batch.commit()
+
+    alive = _get_alive_players(round_id)
+    n_alive = len(alive)
+
+    _ephemeral(respond, (
+        f"[DEBUG] Kill applied: <@{target_id}> eliminated.\n"
+        f"New target: {'<@' + new_target_id + '>' if new_target_id else 'none'}.\n"
+        f"{n_alive} player(s) remaining."
+    ))
+
+    client.chat_postMessage(
+        channel=ASSASSIN_CHANNEL_ID,
+        text=f"[DEBUG] <@{target_id}> has been eliminated by <@{user_id}>! {n_alive} player(s) remain.",
+    )
+
+    if n_alive <= 1:
+        _end_round(client, reason="last_standing")
+
+
+def _debug_addbot(respond, n):
+    state = _get_state()
+    if state["status"] != "pending":
+        _ephemeral(respond, f"Round is not pending (status: `{state['status']}`). Cannot add bots.")
+        return
+
+    rnd = _get_round()
+    round_id = rnd["round_id"]
+
+    # Find the next available bot slot (avoid collisions across resets)
+    existing = [
+        p["user_id"] for p in _get_players_for_round(round_id)
+        if p["user_id"].startswith("UBOT")
+    ]
+    start_index = len(existing) + 1
+
+    db = _db()
+    added = []
+    for i in range(start_index, start_index + n):
+        bot_id = f"UBOT{i:03d}"
+        db.collection(COL_PLAYERS).document(bot_id).set({
+            "user_id": bot_id,
+            "round_id": round_id,
+            "status": "pending",
+            "target_id": None,
+            "kills": 0,
+            "killed_by": None,
+            "joined_ts": time.time(),
+            "assigned_ts": None,
+        })
+        added.append(bot_id)
+
+    total = len(_get_players_for_round(round_id))
+    bot_list = ", ".join(f"`{b}`" for b in added)
+    _ephemeral(respond, f"[DEBUG] Added {n} bot(s): {bot_list}\nTotal players in round: {total}")
+
+
+def _debug_reset(respond):
+    db = _db()
+
+    # Delete round doc
+    db.collection(COL_ROUNDS).document("current").delete()
+
+    # Delete all player docs
+    for doc in db.collection(COL_PLAYERS).stream():
+        doc.reference.delete()
+
+    # Delete all kill reports
+    for doc in db.collection(COL_REPORTS).stream():
+        doc.reference.delete()
+
+    with _state_lock:
+        _game_state["status"] = "none"
+        _game_state["round_id"] = None
+        _game_state["gm_id"] = None
+        _game_state["start_ts"] = None
+
+    _ephemeral(respond, "[DEBUG] All game data wiped. State reset to `none`.")
 
 
 # ---------------------------------------------------------------------------
@@ -723,14 +972,19 @@ def register_assassins_handlers(app):
                     _handle_leaderboard(body, client, respond)
                 elif sub == "end":
                     _handle_end(body, client, respond)
+                elif sub == "leave":
+                    _handle_leave(body, client, respond)
                 elif sub == "players":
                     _handle_players(body, client, respond)
+                elif sub == "debug":
+                    _handle_debug(body, client, respond, raw_text)
                 else:
                     respond({
                         "response_type": "ephemeral",
                         "text": (
                             "*Water Assassins commands:*\n"
                             "• `/assassin join` — join the pending round\n"
+                            "• `/assassin leave` — leave before the round starts\n"
                             "• `/assassin start YYYY-MM-DD` — (GM) create a new round\n"
                             "• `/assassin report` — report a kill (GM validates)\n"
                             "• `/assassin status` — view your current status & target\n"

@@ -670,11 +670,11 @@ def _handle_eliminate(body, client, respond):
         return
 
     raw = parts[1]
-    # Parse <@UXXXXXXX> or <@UXXXXXXX|name> mention format
-    if raw.startswith("<@") and raw.endswith(">"):
-        target_id = raw[2:].split("|")[0].rstrip(">")
-    else:
-        target_id = raw
+    # Require a proper @mention so Slack can autofill — format: <@UXXXXXXX> or <@UXXXXXXX|name>
+    if not (raw.startswith("<@") and raw.endswith(">")):
+        _ephemeral(respond, "Usage: `/assassin eliminate @username` — type `@` and select a user from the picker.")
+        return
+    target_id = raw[2:].split("|")[0].rstrip(">")
 
     round_id = state["round_id"]
     target = _get_player(target_id)

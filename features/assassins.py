@@ -653,7 +653,7 @@ def _handle_leaderboard(body, client, respond):
     _ephemeral(respond, f":droplet: *Water Assassins — Leaderboard*\n\n{text}")
 
 
-def _handle_rules(body, client):
+def _handle_rules(body, client, respond):
     state = _get_state()
     rnd = _get_round()
 
@@ -664,10 +664,10 @@ def _handle_rules(body, client):
     else:
         join_line = ":hourglass: No round is open yet. A GM will announce when sign-ups begin."
 
-    client.chat_postMessage(
-        channel=ASSASSIN_CHANNEL_ID,
-        text="Water Assassins — How to Play",
-        blocks=[
+    respond({
+        "response_type": "ephemeral",
+        "text": "Water Assassins — How to Play",
+        "blocks": [
             {
                 "type": "header",
                 "text": {"type": "plain_text", "text": "💧 Water Assassins"},
@@ -678,7 +678,7 @@ def _handle_rules(body, client):
                     "type": "mrkdwn",
                     "text": (
                         "A social elimination game. Every player is secretly assigned a target. "
-                        "Hunt them down — but watch your back, because someone is hunting *you*."
+                        "Hunt them down with a *sock* — but watch your back, because someone is hunting *you*."
                     ),
                 },
             },
@@ -691,7 +691,7 @@ def _handle_rules(body, client):
                         "*How it works:*\n"
                         ":one:  Sign up with `/assassin join` before the round starts.\n"
                         ":two:  At *8am on the start date*, you'll receive a DM with your target's name.\n"
-                        ":three:  Eliminate your target in real life, then post your video proof in this channel.\n"
+                        ":three:  Hit your target with a *sock* and record it. Post the video in this channel.\n"
                         ":four:  Run `/assassin report` — the bot will attach your video and send it to the GM for review.\n"
                         ":five:  Once the GM validates your kill, you inherit your target's target and keep hunting.\n"
                         ":six:  Last hunter standing wins!"
@@ -705,7 +705,7 @@ def _handle_rules(body, client):
                     "type": "mrkdwn",
                     "text": (
                         "*Elimination rules:*\n"
-                        "• You are eliminated if the person hunting you kills you and the GM validates it.\n"
+                        "• You are eliminated if your hunter hits you with a sock *and* the GM validates their recording.\n"
                         "• You are also eliminated at the end of the round if you haven't scored *at least one kill*.\n"
                         "• Once eliminated, you're out for the rest of the round."
                     ),
@@ -732,7 +732,7 @@ def _handle_rules(body, client):
                 "text": {"type": "mrkdwn", "text": join_line},
             },
         ],
-    )
+    })
 
 
 def _handle_eliminate(body, client, respond):
@@ -1191,7 +1191,7 @@ def register_assassins_handlers(app):
                 elif sub == "eliminate":
                     _handle_eliminate(body, client, respond)
                 elif sub == "rules":
-                    _handle_rules(body, client)
+                    _handle_rules(body, client, respond)
                 elif sub == "leave":
                     _handle_leave(body, client, respond)
                 elif sub == "players":

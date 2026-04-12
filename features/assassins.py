@@ -1,6 +1,5 @@
 """Water Assassins game: target assignment, kill reporting, GM validation, leaderboard."""
 import os
-import re
 import random
 import threading
 import time
@@ -663,26 +662,68 @@ def _handle_eliminate(body, client, respond):
         _ephemeral(respond, "Only the GM can manually eliminate players.")
         return
 
-    text = (body.get("text") or "").strip()
-    # Use regex to handle display names with spaces: <@UXXXXXXX|First Last>
-    match = re.search(r"<@([A-Z0-9]+)(?:\|[^>]*)?>", text)
-    if not match:
-        _ephemeral(respond, "Usage: `/assassin eliminate @username` — type `@` and select a user from the picker.")
-        return
-    target_id = match.group(1)
-
     round_id = state["round_id"]
+    alive = _get_alive_players(round_id)
+
+    if not alive:
+        _ephemeral(respond, "No alive players to eliminate.")
+        return
+
+    # Build options from alive players, fetching display names from Slack
+    options = []
+    for p in alive:
+        uid = p["user_id"]
+        if uid.startswith("UBOT"):
+            name = uid  # fake bot player
+        else:
+            try:
+                info = client.users_info(user=uid)
+                name = (
+                    info["user"].get("profile", {}).get("display_name")
+                    or info["user"].get("real_name")
+                    or uid
+                )
+            except Exception:
+                name = uid
+        options.append({
+            "text": {"type": "plain_text", "text": name},
+            "value": uid,
+        })
+
+    client.views_open(
+        trigger_id=body["trigger_id"],
+        view={
+            "type": "modal",
+            "callback_id": "assassin_eliminate_modal",
+            "title": {"type": "plain_text", "text": "Eliminate Player"},
+            "submit": {"type": "plain_text", "text": "Eliminate"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "private_metadata": round_id,
+            "blocks": [
+                {
+                    "type": "input",
+                    "block_id": "player_block",
+                    "label": {"type": "plain_text", "text": "Select player to eliminate"},
+                    "element": {
+                        "type": "static_select",
+                        "action_id": "player_select",
+                        "placeholder": {"type": "plain_text", "text": "Choose a player…"},
+                        "options": options,
+                    },
+                }
+            ],
+        },
+    )
+
+
+def _do_eliminate(client, gm_id, target_id, round_id):
+    """Shared elimination logic used by modal submit and debug commands."""
     target = _get_player(target_id)
-
     if not target or target.get("round_id") != round_id:
-        _ephemeral(respond, f"<@{target_id}> is not a registered player in the current round.")
-        return
-
+        return False, f"<@{target_id}> is not a registered player in the current round."
     if target.get("status") != "alive":
-        _ephemeral(respond, f"<@{target_id}> is already eliminated.")
-        return
+        return False, f"<@{target_id}> is already eliminated."
 
-    # Find who was targeting this player and give them a new target
     db = _db()
     batch = db.batch()
 
@@ -691,7 +732,7 @@ def _handle_eliminate(body, client, respond):
         "killed_by": gm_id,
     }, merge=True)
 
-    # Reassign: anyone whose target was the eliminated player gets the eliminated player's target
+    # Reassign: anyone targeting the eliminated player gets their target instead
     new_target_id = target.get("target_id")
     all_players = _get_players_for_round(round_id)
     for p in all_players:
@@ -705,6 +746,13 @@ def _handle_eliminate(body, client, respond):
     client.chat_postMessage(
         channel=ASSASSIN_CHANNEL_ID,
         text=f"<@{target_id}> has been eliminated by the GM.",
+        blocks=[{
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f":droplet: *<@{target_id}> has been manually eliminated by the GM.*",
+            },
+        }],
     )
 
     try:
@@ -712,11 +760,11 @@ def _handle_eliminate(body, client, respond):
     except Exception:
         pass
 
-    _ephemeral(respond, f"<@{target_id}> has been eliminated.")
-
     alive = _get_alive_players(round_id)
     if len(alive) <= 1:
         _end_round(client, reason="last_standing")
+
+    return True, f"<@{target_id}> has been eliminated."
 
 
 def _handle_end(body, client, respond):
@@ -836,6 +884,8 @@ def _handle_debug(body, client, respond, raw_text):
         parts2 = raw_text.split()
         n = int(parts2[2]) if len(parts2) > 2 and parts2[2].isdigit() else 2
         _debug_addbot(respond, n)
+    elif subcmd == "echo":
+        _ephemeral(respond, f"raw text: `{raw_text}`")
     else:
         _ephemeral(respond, (
             "*Debug commands:*\n"
@@ -1076,8 +1126,8 @@ def register_assassins_handlers(app):
             except Exception as e:
                 logger.exception(f"[Assassins] cmd error: {e}")
 
-        if sub == "report":
-            # Modal must be opened synchronously (trigger_id expires quickly)
+        if sub in ("report", "eliminate"):
+            # Modals must be opened synchronously (trigger_id expires quickly)
             run()
         else:
             threading.Thread(target=run, daemon=True).start()
@@ -1434,3 +1484,21 @@ def register_assassins_handlers(app):
                 logger.exception(f"[Assassins] action_reject error: {e}")
 
         threading.Thread(target=run, daemon=True).start()
+
+    @app.view("assassin_eliminate_modal")
+    def view_eliminate(ack, body, client, logger):
+        ack()
+
+        def run():
+            try:
+                gm_id = body["user"]["id"]
+                round_id = body["view"]["private_metadata"]
+                values = body["view"]["state"]["values"]
+                target_id = values["player_block"]["player_select"]["selected_option"]["value"]
+
+                ok, msg = _do_eliminate(client, gm_id, target_id, round_id)
+                if not ok:
+                    # Can't respond to the user after modal close easily, so just log
+                    logger.warning(f"[Assassins] eliminate modal: {msg}")
+            except Exception as e:
+                logger.exception(f"[Assassins] view_eliminate error: {e}")

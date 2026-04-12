@@ -536,16 +536,11 @@ def _handle_report(body, client, respond):
                 },
                 {"type": "divider"},
                 {
-                    "type": "input",
-                    "block_id": "video_block",
-                    "optional": True,
-                    "element": {
-                        "type": "file_input",
-                        "action_id": "video_input",
-                        "max_files": 1,
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": ":movie_camera: *Evidence:* Post your video in <#" + ASSASSIN_CHANNEL_ID + "> before submitting. The bot will automatically attach your most recent upload to this report.",
                     },
-                    "label": {"type": "plain_text", "text": "Evidence (video or photo)"},
-                    "hint": {"type": "plain_text", "text": "Upload a video or photo as proof of elimination."},
                 },
                 {
                     "type": "input",
@@ -626,19 +621,7 @@ def _handle_leaderboard(body, client, respond):
     else:
         text = "\n".join(lines)
 
-    client.chat_postMessage(
-        channel=ASSASSIN_CHANNEL_ID,
-        text="Water Assassins Leaderboard",
-        blocks=[
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f":droplet: *Water Assassins — Leaderboard*\n\n{text}",
-                },
-            }
-        ],
-    )
+    _ephemeral(respond, f":droplet: *Water Assassins — Leaderboard*\n\n{text}")
 
 
 def _handle_end(body, client, respond):
@@ -1021,9 +1004,16 @@ def register_assassins_handlers(app):
                 if not checked:
                     return
 
-                # Extract optional evidence file
-                uploaded_files = values.get("video_block", {}).get("video_input", {}).get("files", [])
-                evidence_file = uploaded_files[0] if uploaded_files else None
+                # Auto-find most recent file posted by reporter in #assassin-channel
+                evidence_link = None
+                try:
+                    history = client.conversations_history(channel=ASSASSIN_CHANNEL_ID, limit=50)
+                    for msg in history.get("messages", []):
+                        if msg.get("user") == reporter_id and msg.get("files"):
+                            evidence_link = msg["files"][0].get("permalink")
+                            break
+                except Exception:
+                    pass
 
                 report_id = str(uuid.uuid4())
                 _db().collection(COL_REPORTS).document(report_id).set({
@@ -1090,24 +1080,35 @@ def register_assassins_handlers(app):
                     "gm_dm_ts": msg["ts"],
                 }, merge=True)
 
-                # Forward evidence file to GM if provided
-                if evidence_file:
-                    permalink = evidence_file.get("permalink") or evidence_file.get("url_private")
-                    file_name = evidence_file.get("name", "evidence")
-                    if permalink:
-                        client.chat_postMessage(
-                            channel=gm_channel,
-                            text=f"Evidence from <@{reporter_id}>: {permalink}",
-                            blocks=[
-                                {
-                                    "type": "section",
-                                    "text": {
-                                        "type": "mrkdwn",
-                                        "text": f":movie_camera: *Evidence:* <{permalink}|{file_name}>",
-                                    },
-                                }
-                            ],
-                        )
+                # Forward auto-detected evidence link to GM
+                if evidence_link:
+                    client.chat_postMessage(
+                        channel=gm_channel,
+                        text=f"Evidence from <@{reporter_id}>: {evidence_link}",
+                        blocks=[
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": f":movie_camera: *Evidence (auto-detected):*\n{evidence_link}",
+                                },
+                            }
+                        ],
+                    )
+                else:
+                    client.chat_postMessage(
+                        channel=gm_channel,
+                        text=f"No evidence file found from <@{reporter_id}> in #assassin-channel.",
+                        blocks=[
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": f":warning: No evidence file found from <@{reporter_id}> in <#{ASSASSIN_CHANNEL_ID}>.",
+                                },
+                            }
+                        ],
+                    )
 
             except Exception as e:
                 logger.exception(f"[Assassins] view_kill_report error: {e}")

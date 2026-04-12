@@ -528,6 +528,17 @@ def _handle_report(body, client, respond):
         _ephemeral(respond, f"No evidence found. Post your video in <#{ASSASSIN_CHANNEL_ID}> first, then run `/assassin report`.")
         return
 
+    # Reject if this exact file permalink was already submitted in a previous report this round
+    already_used = list(
+        _db().collection(COL_REPORTS)
+        .where("round_id", "==", round_id)
+        .where("evidence_link", "==", evidence_link)
+        .stream()
+    )
+    if already_used:
+        _ephemeral(respond, "That video has already been submitted as evidence. Post a new video in the channel before reporting again.")
+        return
+
     client.views_open(
         trigger_id=trigger_id,
         view={
@@ -1028,6 +1039,7 @@ def register_assassins_handlers(app):
                     "reporter_id": reporter_id,
                     "target_id": target_id,
                     "status": "pending",
+                    "evidence_link": evidence_link,
                     "gm_dm_channel": None,
                     "gm_dm_ts": None,
                     "created_ts": time.time(),

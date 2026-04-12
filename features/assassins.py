@@ -8,6 +8,7 @@ from datetime import datetime
 
 import pytz
 from firebase_admin import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 from firebase_client import get_firebase_app
 from slack_sdk import WebClient
 
@@ -53,7 +54,9 @@ def _get_player(user_id):
 def _get_players_for_round(round_id):
     return [
         doc.to_dict()
-        for doc in _db().collection(COL_PLAYERS).where("round_id", "==", round_id).stream()
+        for doc in _db().collection(COL_PLAYERS)
+        .where(filter=FieldFilter("round_id", "==", round_id))
+        .stream()
     ]
 
 
@@ -62,8 +65,8 @@ def _get_alive_players(round_id):
         doc.to_dict()
         for doc in _db()
         .collection(COL_PLAYERS)
-        .where("round_id", "==", round_id)
-        .where("status", "==", "alive")
+        .where(filter=FieldFilter("round_id", "==", round_id))
+        .where(filter=FieldFilter("status", "==", "alive"))
         .stream()
     ]
 
@@ -72,9 +75,9 @@ def _get_pending_report_for_reporter(reporter_id, round_id):
     docs = list(
         _db()
         .collection(COL_REPORTS)
-        .where("reporter_id", "==", reporter_id)
-        .where("round_id", "==", round_id)
-        .where("status", "==", "pending")
+        .where(filter=FieldFilter("reporter_id", "==", reporter_id))
+        .where(filter=FieldFilter("round_id", "==", round_id))
+        .where(filter=FieldFilter("status", "==", "pending"))
         .stream()
     )
     return docs[0].to_dict() if docs else None
@@ -531,8 +534,8 @@ def _handle_report(body, client, respond):
     # Reject if this exact file permalink was already submitted in a previous report this round
     already_used = list(
         _db().collection(COL_REPORTS)
-        .where("round_id", "==", round_id)
-        .where("evidence_link", "==", evidence_link)
+        .where(filter=FieldFilter("round_id", "==", round_id))
+        .where(filter=FieldFilter("evidence_link", "==", evidence_link))
         .stream()
     )
     if already_used:
@@ -678,9 +681,12 @@ def _handle_eliminate(body, client, respond):
         else:
             try:
                 info = client.users_info(user=uid)
+                profile = info["user"].get("profile", {})
                 name = (
-                    info["user"].get("profile", {}).get("display_name")
+                    profile.get("real_name")
+                    or profile.get("display_name")
                     or info["user"].get("real_name")
+                    or info["user"].get("name")
                     or uid
                 )
             except Exception:
@@ -929,8 +935,8 @@ def _debug_state(respond):
     lines += ["", "*— Pending kill reports —*"]
     reports = list(
         _db().collection(COL_REPORTS)
-        .where("round_id", "==", rnd.get("round_id", ""))
-        .where("status", "==", "pending")
+        .where(filter=FieldFilter("round_id", "==", rnd.get("round_id", "")))
+        .where(filter=FieldFilter("status", "==", "pending"))
         .stream()
     )
     if not reports:
@@ -1498,7 +1504,8 @@ def register_assassins_handlers(app):
 
                 ok, msg = _do_eliminate(client, gm_id, target_id, round_id)
                 if not ok:
-                    # Can't respond to the user after modal close easily, so just log
                     logger.warning(f"[Assassins] eliminate modal: {msg}")
             except Exception as e:
                 logger.exception(f"[Assassins] view_eliminate error: {e}")
+
+        threading.Thread(target=run, daemon=True).start()

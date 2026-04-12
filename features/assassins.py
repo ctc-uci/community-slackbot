@@ -650,6 +650,80 @@ def _handle_leaderboard(body, client, respond):
     _ephemeral(respond, f":droplet: *Water Assassins — Leaderboard*\n\n{text}")
 
 
+def _handle_eliminate(body, client, respond):
+    gm_id = body["user_id"]
+    state = _get_state()
+
+    if state["status"] != "active":
+        _ephemeral(respond, "There is no active round.")
+        return
+
+    if state.get("gm_id") != gm_id:
+        _ephemeral(respond, "Only the GM can manually eliminate players.")
+        return
+
+    text = (body.get("text") or "").strip()
+    parts = text.split()
+    # parts[0] = "eliminate", parts[1] = "<@UXXXXXXX>" or "UXXXXXXX"
+    if len(parts) < 2:
+        _ephemeral(respond, "Usage: `/assassin eliminate @user`")
+        return
+
+    raw = parts[1]
+    # Parse <@UXXXXXXX> or <@UXXXXXXX|name> mention format
+    if raw.startswith("<@") and raw.endswith(">"):
+        target_id = raw[2:].split("|")[0].rstrip(">")
+    else:
+        target_id = raw
+
+    round_id = state["round_id"]
+    target = _get_player(target_id)
+
+    if not target or target.get("round_id") != round_id:
+        _ephemeral(respond, f"<@{target_id}> is not a registered player in the current round.")
+        return
+
+    if target.get("status") != "alive":
+        _ephemeral(respond, f"<@{target_id}> is already eliminated.")
+        return
+
+    # Find who was targeting this player and give them a new target
+    db = _db()
+    batch = db.batch()
+
+    batch.set(db.collection(COL_PLAYERS).document(target_id), {
+        "status": "eliminated",
+        "killed_by": gm_id,
+    }, merge=True)
+
+    # Reassign: anyone whose target was the eliminated player gets the eliminated player's target
+    new_target_id = target.get("target_id")
+    all_players = _get_players_for_round(round_id)
+    for p in all_players:
+        if p.get("target_id") == target_id and p.get("status") == "alive":
+            batch.set(db.collection(COL_PLAYERS).document(p["user_id"]), {
+                "target_id": new_target_id,
+            }, merge=True)
+
+    batch.commit()
+
+    client.chat_postMessage(
+        channel=ASSASSIN_CHANNEL_ID,
+        text=f"<@{target_id}> has been eliminated by the GM.",
+    )
+
+    try:
+        _dm(client, target_id, text="You have been manually eliminated from the round by the GM.")
+    except Exception:
+        pass
+
+    _ephemeral(respond, f"<@{target_id}> has been eliminated.")
+
+    alive = _get_alive_players(round_id)
+    if len(alive) <= 1:
+        _end_round(client, reason="last_standing")
+
+
 def _handle_end(body, client, respond):
     user_id = body["user_id"]
     state = _get_state()
@@ -981,6 +1055,8 @@ def register_assassins_handlers(app):
                     _handle_leaderboard(body, client, respond)
                 elif sub == "end":
                     _handle_end(body, client, respond)
+                elif sub == "eliminate":
+                    _handle_eliminate(body, client, respond)
                 elif sub == "leave":
                     _handle_leave(body, client, respond)
                 elif sub == "players":

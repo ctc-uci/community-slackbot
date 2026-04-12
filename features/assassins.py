@@ -1,5 +1,6 @@
 """Water Assassins game: target assignment, kill reporting, GM validation, leaderboard."""
 import os
+import re
 import random
 import threading
 import time
@@ -663,18 +664,12 @@ def _handle_eliminate(body, client, respond):
         return
 
     text = (body.get("text") or "").strip()
-    parts = text.split()
-    # parts[0] = "eliminate", parts[1] = "<@UXXXXXXX>" or "UXXXXXXX"
-    if len(parts) < 2:
-        _ephemeral(respond, "Usage: `/assassin eliminate @user`")
-        return
-
-    raw = parts[1]
-    # Require a proper @mention so Slack can autofill — format: <@UXXXXXXX> or <@UXXXXXXX|name>
-    if not (raw.startswith("<@") and raw.endswith(">")):
+    # Use regex to handle display names with spaces: <@UXXXXXXX|First Last>
+    match = re.search(r"<@([A-Z0-9]+)(?:\|[^>]*)?>", text)
+    if not match:
         _ephemeral(respond, "Usage: `/assassin eliminate @username` — type `@` and select a user from the picker.")
         return
-    target_id = raw[2:].split("|")[0].rstrip(">")
+    target_id = match.group(1)
 
     round_id = state["round_id"]
     target = _get_player(target_id)

@@ -542,7 +542,6 @@ def _handle_report(body, client, respond):
                     "element": {
                         "type": "file_input",
                         "action_id": "video_input",
-                        "filetypes": ["mp4", "mov", "avi", "mkv", "webm", "jpg", "jpeg", "png", "gif"],
                         "max_files": 1,
                     },
                     "label": {"type": "plain_text", "text": "Evidence (video or photo)"},
@@ -592,7 +591,7 @@ def _handle_status(body, client, respond):
         msg = f"*Status:* Registered, waiting for round to start (targets assigned at 8am on {rnd.get('start_date', 'TBD')})\n*Kills:* {kills}"
     elif status == "alive":
         target_line = f"*Current target:* <@{target_id}>" if target_id else "*Current target:* None"
-        msg = f"*Status:* Alive :green_circle:\n{target_line}\n*Kills:* {kills}"
+        msg = f"*Status:* Alive :large_green_circle:\n{target_line}\n*Kills:* {kills}"
     elif status == "eliminated":
         killer = player.get("killed_by")
         killer_line = f" by <@{killer}>" if killer else ""
@@ -619,7 +618,7 @@ def _handle_leaderboard(body, client, respond):
     lines = []
     for idx, p in enumerate(sorted_players):
         medal = medals[idx] if idx < 3 else f"{idx + 1}."
-        status_icon = ":green_circle:" if p.get("status") == "alive" else ":red_circle:"
+        status_icon = ":large_green_circle:" if p.get("status") == "alive" else ":red_circle:"
         lines.append(f"{medal} {status_icon} <@{p['user_id']}> — {p.get('kills', 0)} kill(s)")
 
     if not lines:
@@ -870,13 +869,14 @@ def _debug_kill(body, client, respond):
         f"{n_alive} player(s) remaining."
     ))
 
+    if n_alive <= 1:
+        _end_round(client, reason="last_standing")
+        return
+
     client.chat_postMessage(
         channel=ASSASSIN_CHANNEL_ID,
         text=f"[DEBUG] <@{target_id}> has been eliminated by <@{user_id}>! {n_alive} player(s) remain.",
     )
-
-    if n_alive <= 1:
-        _end_round(client, reason="last_standing")
 
 
 def _debug_addbot(respond, n):

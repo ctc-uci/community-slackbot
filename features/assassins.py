@@ -403,6 +403,11 @@ def _handle_join(body, client, respond):
 
     start_date = rnd.get("start_date", "TBD")
     _ephemeral(respond, f"You've joined the Water Assassins game! :droplet: Targets will be assigned at 8am on {start_date}.")
+    respond({
+        "response_type": "ephemeral",
+        "text": "Water Assassins — How to Play",
+        "blocks": _build_rules_blocks(),
+    })
 
     client.chat_postMessage(
         channel=ASSASSIN_CHANNEL_ID,
@@ -653,7 +658,7 @@ def _handle_leaderboard(body, client, respond):
     _ephemeral(respond, f":droplet: *Water Assassins — Leaderboard*\n\n{text}")
 
 
-def _handle_rules(body, client, respond):
+def _build_rules_blocks():
     state = _get_state()
     rnd = _get_round()
 
@@ -664,74 +669,78 @@ def _handle_rules(body, client, respond):
     else:
         join_line = ":hourglass: No round is open yet. A GM will announce when sign-ups begin."
 
+    return [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "💧 Water Assassins"},
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "A social elimination game. Every player is secretly assigned a target. "
+                    "Hunt them down with a *sock* — but watch your back, because someone is hunting *you*."
+                ),
+            },
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*How it works:*\n"
+                    ":one:  Sign up with `/assassin join` before the round starts.\n"
+                    ":two:  At *8am on the start date*, you'll receive a DM with your target's name.\n"
+                    ":three:  Hit your target with a *sock* and record it. Post the video in this channel.\n"
+                    ":four:  Run `/assassin report` — the bot will attach your video and send it to the GM for review.\n"
+                    ":five:  Once the GM validates your kill, you inherit your target's target and keep hunting.\n"
+                    ":six:  Last hunter standing wins!"
+                ),
+            },
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*Elimination rules:*\n"
+                    "• You are eliminated if your hunter hits you with a sock *and* the GM validates their recording.\n"
+                    "• You are also eliminated at the end of the round if you haven't scored *at least one kill*.\n"
+                    "• Once eliminated, you're out for the rest of the round."
+                ),
+            },
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*Commands:*\n"
+                    "• `/assassin join` — join the current round\n"
+                    "• `/assassin report` — report a kill (post your video here first)\n"
+                    "• `/assassin status` — check your target and kill count\n"
+                    "• `/assassin players` — see who's still alive\n"
+                    "• `/assassin leaderboard` — view the kill leaderboard"
+                ),
+            },
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": join_line},
+        },
+    ]
+
+
+def _handle_rules(body, client, respond):
     respond({
         "response_type": "ephemeral",
         "text": "Water Assassins — How to Play",
-        "blocks": [
-            {
-                "type": "header",
-                "text": {"type": "plain_text", "text": "💧 Water Assassins"},
-            },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        "A social elimination game. Every player is secretly assigned a target. "
-                        "Hunt them down with a *sock* — but watch your back, because someone is hunting *you*."
-                    ),
-                },
-            },
-            {"type": "divider"},
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        "*How it works:*\n"
-                        ":one:  Sign up with `/assassin join` before the round starts.\n"
-                        ":two:  At *8am on the start date*, you'll receive a DM with your target's name.\n"
-                        ":three:  Hit your target with a *sock* and record it. Post the video in this channel.\n"
-                        ":four:  Run `/assassin report` — the bot will attach your video and send it to the GM for review.\n"
-                        ":five:  Once the GM validates your kill, you inherit your target's target and keep hunting.\n"
-                        ":six:  Last hunter standing wins!"
-                    ),
-                },
-            },
-            {"type": "divider"},
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        "*Elimination rules:*\n"
-                        "• You are eliminated if your hunter hits you with a sock *and* the GM validates their recording.\n"
-                        "• You are also eliminated at the end of the round if you haven't scored *at least one kill*.\n"
-                        "• Once eliminated, you're out for the rest of the round."
-                    ),
-                },
-            },
-            {"type": "divider"},
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        "*Commands:*\n"
-                        "• `/assassin join` — join the current round\n"
-                        "• `/assassin report` — report a kill (post your video here first)\n"
-                        "• `/assassin status` — check your target and kill count\n"
-                        "• `/assassin players` — see who's still alive\n"
-                        "• `/assassin leaderboard` — view the kill leaderboard"
-                    ),
-                },
-            },
-            {"type": "divider"},
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": join_line},
-            },
-        ],
+        "blocks": _build_rules_blocks(),
     })
 
 
@@ -1592,5 +1601,24 @@ def register_assassins_handlers(app):
                     logger.warning(f"[Assassins] eliminate modal: {msg}")
             except Exception as e:
                 logger.exception(f"[Assassins] view_eliminate error: {e}")
+
+        threading.Thread(target=run, daemon=True).start()
+
+    @app.event("member_joined_channel")
+    def handle_assassins_channel_join(event, client, logger):
+        if event.get("channel") != ASSASSIN_CHANNEL_ID:
+            return
+
+        def run():
+            try:
+                user_id = event.get("user")
+                client.chat_postEphemeral(
+                    channel=ASSASSIN_CHANNEL_ID,
+                    user=user_id,
+                    text="Welcome to Water Assassins!",
+                    blocks=_build_rules_blocks(),
+                )
+            except Exception as e:
+                logger.exception(f"[Assassins] channel join rules error: {e}")
 
         threading.Thread(target=run, daemon=True).start()

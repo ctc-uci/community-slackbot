@@ -653,6 +653,88 @@ def _handle_leaderboard(body, client, respond):
     _ephemeral(respond, f":droplet: *Water Assassins — Leaderboard*\n\n{text}")
 
 
+def _handle_rules(body, client):
+    state = _get_state()
+    rnd = _get_round()
+
+    if state["status"] == "pending" and rnd:
+        join_line = f":pencil: *Sign-ups are open!* Run `/assassin join` to enter. Targets assigned at *8am on {rnd.get('start_date', 'TBD')}*."
+    elif state["status"] == "active":
+        join_line = ":lock: The round is currently in progress. Join the next one!"
+    else:
+        join_line = ":hourglass: No round is open yet. A GM will announce when sign-ups begin."
+
+    client.chat_postMessage(
+        channel=ASSASSIN_CHANNEL_ID,
+        text="Water Assassins — How to Play",
+        blocks=[
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": "💧 Water Assassins"},
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "A social elimination game. Every player is secretly assigned a target. "
+                        "Hunt them down — but watch your back, because someone is hunting *you*."
+                    ),
+                },
+            },
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*How it works:*\n"
+                        ":one:  Sign up with `/assassin join` before the round starts.\n"
+                        ":two:  At *8am on the start date*, you'll receive a DM with your target's name.\n"
+                        ":three:  Eliminate your target in real life, then post your video proof in this channel.\n"
+                        ":four:  Run `/assassin report` — the bot will attach your video and send it to the GM for review.\n"
+                        ":five:  Once the GM validates your kill, you inherit your target's target and keep hunting.\n"
+                        ":six:  Last hunter standing wins!"
+                    ),
+                },
+            },
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*Elimination rules:*\n"
+                        "• You are eliminated if the person hunting you kills you and the GM validates it.\n"
+                        "• You are also eliminated at the end of the round if you haven't scored *at least one kill*.\n"
+                        "• Once eliminated, you're out for the rest of the round."
+                    ),
+                },
+            },
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*Commands:*\n"
+                        "• `/assassin join` — join the current round\n"
+                        "• `/assassin report` — report a kill (post your video here first)\n"
+                        "• `/assassin status` — check your target and kill count\n"
+                        "• `/assassin players` — see who's still alive\n"
+                        "• `/assassin leaderboard` — view the kill leaderboard"
+                    ),
+                },
+            },
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": join_line},
+            },
+        ],
+    )
+
+
 def _handle_eliminate(body, client, respond):
     gm_id = body["user_id"]
     state = _get_state()
@@ -1108,6 +1190,8 @@ def register_assassins_handlers(app):
                     _handle_end(body, client, respond)
                 elif sub == "eliminate":
                     _handle_eliminate(body, client, respond)
+                elif sub == "rules":
+                    _handle_rules(body, client)
                 elif sub == "leave":
                     _handle_leave(body, client, respond)
                 elif sub == "players":
@@ -1119,6 +1203,7 @@ def register_assassins_handlers(app):
                         "response_type": "ephemeral",
                         "text": (
                             "*Water Assassins commands:*\n"
+                            "• `/assassin rules` — post how-to-play info in the channel\n"
                             "• `/assassin join` — join the pending round\n"
                             "• `/assassin leave` — leave before the round starts\n"
                             "• `/assassin start YYYY-MM-DD` — (GM) create a new round\n"

@@ -344,7 +344,7 @@ def _end_round(client, reason="gm_ended"):
             "*Survivors advancing:* " + ", ".join(f"<@{uid}>" for uid in survivor_ids)
             if survivor_ids else "No survivors remain."
         )
-        end_note = "\n\nThe GM will announce when the next round opens. Use `/assassin newround` to continue."
+        end_note = "\n\nThe GM will announce when the next round opens."
 
     zero_kill_ids = [p["user_id"] for p in zero_kill_alive]
     eliminated_line = (
@@ -1457,9 +1457,22 @@ def _debug_state(respond):
 
 def _debug_assign(client, respond):
     state = _get_state()
+
+    if state["status"] == "round_ended":
+        next_rnd_num = state["round_number"] + 1
+        next_rnd = _get_round(next_rnd_num)
+        if next_rnd and next_rnd.get("status") == "scheduled":
+            _ephemeral(respond, f"Advancing to round {next_rnd_num} and assigning targets…")
+            _advance_to_round(client, next_rnd_num, next_rnd)
+            _ephemeral(respond, "Done. Check your DMs for your target.")
+        else:
+            _ephemeral(respond, "No scheduled next round found. Use `/assassin newround YYYY-MM-DD` to start one manually.")
+        return
+
     if state["status"] != "pending":
         _ephemeral(respond, f"Round is not pending (status: `{state['status']}`). Cannot force assign.")
         return
+
     _ephemeral(respond, "Forcing target assignment now…")
     _assign_targets(client)
     _ephemeral(respond, "Done. Check your DMs for your target.")

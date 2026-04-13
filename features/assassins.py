@@ -533,21 +533,40 @@ def _handle_join(body, client, respond):
     )
 
 
-def _build_start_modal_blocks(num_rounds=1, round_values=None):
+def _build_start_modal_blocks(num_rounds=1, round_values=None, participants=None):
     """Build blocks for the game setup modal.
 
-    round_values — list of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} used to
-    pre-fill dates when updating the modal after "Add Another Round" is clicked.
+    round_values  — list of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}, used to
+                    re-fill dates when the modal is updated via "Add Another Round".
+    participants  — list of user IDs to pre-select in the players picker.
     """
+    participants_el = {
+        "type": "multi_users_select",
+        "action_id": "participants_select",
+        "placeholder": {"type": "plain_text", "text": "Select players…"},
+    }
+    if participants:
+        participants_el["initial_users"] = participants
+
     blocks = [
+        {
+            "type": "input",
+            "block_id": "participants_block",
+            "label": {"type": "plain_text", "text": "Players"},
+            "hint": {
+                "type": "plain_text",
+                "text": "Pre-filled from channel members. Add or remove anyone before creating the game.",
+            },
+            "element": participants_el,
+        },
+        {"type": "divider"},
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    "Schedule all rounds for the game. Each round starts at *8am* on its start date "
-                    "and ends at *11:59pm* on its end date.\n\n"
-                    "Players can join any time before Round 1 starts. "
+                    "Schedule all rounds below. Each round starts at *8am* on its start date "
+                    "and ends at *11:59pm* on its end date. "
                     "Once eliminated, a player cannot continue in later rounds."
                 ),
             },
@@ -626,6 +645,25 @@ def _handle_start(body, client, respond):
         _ephemeral(respond, "A round just ended. Use `/assassin newround YYYY-MM-DD` to start the next round, or `/assassin endgame` to finish.")
         return
 
+    # Fetch channel members to pre-populate the players picker
+    participants = []
+    try:
+        bot_user_id = client.auth_test()["user_id"]
+        cursor = None
+        while True:
+            kwargs = {"channel": ASSASSIN_CHANNEL_ID, "limit": 200}
+            if cursor:
+                kwargs["cursor"] = cursor
+            result = client.conversations_members(**kwargs)
+            for uid in result.get("members", []):
+                if uid != bot_user_id and uid != "USLACKBOT":
+                    participants.append(uid)
+            cursor = (result.get("response_metadata") or {}).get("next_cursor")
+            if not cursor:
+                break
+    except Exception as e:
+        print(f"[Assassins] Failed to fetch channel members: {e}")
+
     client.views_open(
         trigger_id=body["trigger_id"],
         view={
@@ -635,7 +673,7 @@ def _handle_start(body, client, respond):
             "submit": {"type": "plain_text", "text": "Create Game"},
             "close": {"type": "plain_text", "text": "Cancel"},
             "private_metadata": "1",
-            "blocks": _build_start_modal_blocks(1),
+            "blocks": _build_start_modal_blocks(1, participants=participants),
         },
     )
 
@@ -1681,9 +1719,14 @@ def register_assassins_handlers(app):
         try:
             view = body["view"]
             num_rounds = int(view.get("private_metadata") or "1")
-
-            # Preserve values the GM has already filled in
             state_values = view["state"]["values"]
+
+            # Preserve participants selection
+            participants = (state_values.get("participants_block") or {}).get(
+                "participants_select", {}
+            ).get("selected_users") or []
+
+            # Preserve round dates already filled in
             round_values = []
             for i in range(1, num_rounds + 1):
                 start = (state_values.get(f"round_{i}_start_block") or {}).get(
@@ -1704,7 +1747,7 @@ def register_assassins_handlers(app):
                     "submit": {"type": "plain_text", "text": "Create Game"},
                     "close": {"type": "plain_text", "text": "Cancel"},
                     "private_metadata": str(new_num),
-                    "blocks": _build_start_modal_blocks(new_num, round_values),
+                    "blocks": _build_start_modal_blocks(new_num, round_values, participants),
                 },
             )
         except Exception as e:
@@ -1715,9 +1758,17 @@ def register_assassins_handlers(app):
         num_rounds = int(body["view"].get("private_metadata") or "1")
         state_values = body["view"]["state"]["values"]
 
-        rounds = []
-        errors = {}
+        # --- Validate participants ---
+        selected_users = (state_values.get("participants_block") or {}).get(
+            "participants_select", {}
+        ).get("selected_users") or []
 
+        errors = {}
+        if not selected_users:
+            errors["participants_block"] = "Select at least one player."
+
+        # --- Validate round dates ---
+        rounds = []
         for i in range(1, num_rounds + 1):
             start_date = (state_values.get(f"round_{i}_start_block") or {}).get(
                 f"round_{i}_start", {}
@@ -1757,21 +1808,15 @@ def register_assassins_handlers(app):
                 "scheduled_end_ts": scheduled_end_ts,
             })
 
-        if errors:
-            ack(response_action="errors", errors=errors)
-            return
-
-        if not rounds:
-            ack(response_action="errors", errors={
-                "round_1_start_block": "At least one round with a start date is required."
-            })
-            return
+        if not rounds and "round_1_start_block" not in errors:
+            errors["round_1_start_block"] = "At least one round with a start date is required."
 
         cur_state = _get_state()
         if cur_state["status"] == "active":
-            ack(response_action="errors", errors={
-                "round_1_start_block": "A round is already in progress. End it first."
-            })
+            errors["round_1_start_block"] = "A round is already in progress. End it first."
+
+        if errors:
+            ack(response_action="errors", errors=errors)
             return
 
         ack()
@@ -1804,6 +1849,21 @@ def register_assassins_handlers(app):
                         "player_order": [],
                     })
 
+                now = time.time()
+                for uid in selected_users:
+                    db.collection(COL_PLAYERS).document(uid).set({
+                        "user_id": uid,
+                        "game_id": game_id,
+                        "status": "pending",
+                        "target_id": None,
+                        "kills_this_round": 0,
+                        "total_kills": 0,
+                        "killed_by": None,
+                        "eliminated_in_round": None,
+                        "joined_ts": now,
+                        "assigned_ts": None,
+                    })
+
                 _set_state(
                     "pending",
                     game_id=game_id,
@@ -1822,12 +1882,13 @@ def register_assassins_handlers(app):
 
                 total_rounds = len(rounds)
                 schedule_text = "\n".join(schedule_lines)
+                player_mentions = " ".join(f"<@{uid}>" for uid in selected_users)
 
                 client.chat_postMessage(
                     channel=ASSASSIN_CHANNEL_ID,
                     text=(
                         f"A new {total_rounds}-round Water Assassins game has been created "
-                        f"by <@{user_id}>! Join with `/assassin join`."
+                        f"by <@{user_id}>!"
                     ),
                     blocks=[
                         {
@@ -1835,10 +1896,10 @@ def register_assassins_handlers(app):
                             "text": {
                                 "type": "mrkdwn",
                                 "text": (
-                                    ":droplet: *A new Water Assassins game is open!*\n\n"
+                                    ":droplet: *A new Water Assassins game is starting!*\n\n"
                                     f"Created by <@{user_id}>. *{total_rounds} round(s)* planned.\n\n"
                                     f"{schedule_text}\n\n"
-                                    "Sign up with `/assassin join` before Round 1 starts!"
+                                    f"*Players ({len(selected_users)}):* {player_mentions}"
                                 ),
                             },
                         }

@@ -538,15 +538,13 @@ def _build_start_modal_blocks(num_rounds=1, round_values=None, participants=None
 
     round_values  — list of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}, used to
                     re-fill dates when the modal is updated via "Add Another Round".
-    participants  — list of user IDs to pre-select in the players picker.
+    participants  — list of user IDs to pre-select in the players picker (reserved for future use).
     """
     participants_el = {
         "type": "multi_users_select",
         "action_id": "participants_select",
         "placeholder": {"type": "plain_text", "text": "Select players…"},
     }
-    if participants:
-        participants_el["initial_users"] = participants
 
     blocks = [
         {
@@ -645,8 +643,7 @@ def _handle_start(body, client, respond):
         _ephemeral(respond, "A round just ended. Use `/assassin newround YYYY-MM-DD` to start the next round, or `/assassin endgame` to finish.")
         return
 
-    # Open the modal immediately so we don't miss the 3-second trigger_id window
-    open_result = client.views_open(
+    client.views_open(
         trigger_id=body["trigger_id"],
         view={
             "type": "modal",
@@ -658,44 +655,6 @@ def _handle_start(body, client, respond):
             "blocks": _build_start_modal_blocks(1),
         },
     )
-
-    # Fetch channel members and update the modal to pre-populate the players picker
-    view_id = open_result["view"]["id"]
-
-    def prefill_members():
-        try:
-            bot_user_id = client.auth_test()["user_id"]
-            participants = []
-            cursor = None
-            while True:
-                kwargs = {"channel": ASSASSIN_CHANNEL_ID, "limit": 200}
-                if cursor:
-                    kwargs["cursor"] = cursor
-                result = client.conversations_members(**kwargs)
-                for uid in result.get("members", []):
-                    if uid != bot_user_id and uid != "USLACKBOT":
-                        participants.append(uid)
-                cursor = (result.get("response_metadata") or {}).get("next_cursor")
-                if not cursor:
-                    break
-
-            if participants:
-                client.views_update(
-                    view_id=view_id,
-                    view={
-                        "type": "modal",
-                        "callback_id": "assassin_start_modal",
-                        "title": {"type": "plain_text", "text": "New Game Setup"},
-                        "submit": {"type": "plain_text", "text": "Create Game"},
-                        "close": {"type": "plain_text", "text": "Cancel"},
-                        "private_metadata": "1",
-                        "blocks": _build_start_modal_blocks(1, participants=participants),
-                    },
-                )
-        except Exception as e:
-            print(f"[Assassins] Failed to prefill channel members: {e}")
-
-    threading.Thread(target=prefill_members, daemon=True).start()
 
 
 def _handle_newround(body, client, respond):
@@ -831,11 +790,13 @@ def _handle_report(body, client, respond):
         return
 
     evidence_link = None
+    evidence_ts = None
     try:
         history = client.conversations_history(channel=ASSASSIN_CHANNEL_ID, limit=50)
         for msg in history.get("messages", []):
             if msg.get("user") == user_id and msg.get("files"):
                 evidence_link = msg["files"][0].get("permalink")
+                evidence_ts = msg.get("ts")
                 break
     except Exception:
         pass
@@ -1963,6 +1924,7 @@ def register_assassins_handlers(app):
                     "target_id": target_id,
                     "status": "pending",
                     "evidence_link": evidence_link,
+                    "evidence_ts": evidence_ts,
                     "gm_dm_channel": None,
                     "gm_dm_ts": None,
                     "created_ts": time.time(),
@@ -2117,6 +2079,17 @@ def register_assassins_handlers(app):
 
                 batch.commit()
 
+                evidence_ts = report.get("evidence_ts")
+                if evidence_ts:
+                    try:
+                        client.reactions_add(
+                            channel=ASSASSIN_CHANNEL_ID,
+                            name="knife",
+                            timestamp=evidence_ts,
+                        )
+                    except Exception:
+                        pass
+
                 gm_channel = report.get("gm_dm_channel")
                 gm_ts = report.get("gm_dm_ts")
                 if gm_channel and gm_ts:
@@ -2235,6 +2208,17 @@ def register_assassins_handlers(app):
                     "status": "rejected",
                     "resolved_ts": time.time(),
                 }, merge=True)
+
+                evidence_ts = report.get("evidence_ts")
+                if evidence_ts:
+                    try:
+                        client.reactions_add(
+                            channel=ASSASSIN_CHANNEL_ID,
+                            name="no_good",
+                            timestamp=evidence_ts,
+                        )
+                    except Exception:
+                        pass
 
                 gm_channel = report.get("gm_dm_channel")
                 gm_ts = report.get("gm_dm_ts")

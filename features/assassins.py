@@ -381,6 +381,44 @@ def _end_round(client, reason="gm_ended"):
 
 
 # ---------------------------------------------------------------------------
+# Round advancement (pre-scheduled rounds)
+# ---------------------------------------------------------------------------
+
+def _advance_to_round(client, round_number, round_doc):
+    """Automatically start the next pre-scheduled round after a round_ended transition."""
+    state = _get_state()
+    game_id = state["game_id"]
+
+    alive = _get_alive_players(game_id)
+    if len(alive) < 2:
+        _db().collection(COL_GAME).document("current").set({"status": "game_over"}, merge=True)
+        with _state_lock:
+            _game_state["status"] = "game_over"
+        client.chat_postMessage(
+            channel=ASSASSIN_CHANNEL_ID,
+            text="Water Assassins: Not enough surviving players for the next round. Game over!",
+        )
+        return
+
+    start_ts = round_doc.get("start_ts")
+    scheduled_end_ts = round_doc.get("scheduled_end_ts")
+
+    db = _db()
+    db.collection(COL_GAME).document("current").set(
+        {"status": "pending", "round_number": round_number}, merge=True
+    )
+    db.collection(COL_ROUNDS).document(str(round_number)).set(
+        {"status": "pending"}, merge=True
+    )
+
+    _set_state("pending", round_number=round_number, start_ts=start_ts,
+               scheduled_end_ts=scheduled_end_ts)
+
+    # Start time has already passed — assign targets immediately
+    _assign_targets(client)
+
+
+# ---------------------------------------------------------------------------
 # Background thread
 # ---------------------------------------------------------------------------
 
@@ -396,6 +434,14 @@ def _tick(client):
         if time.time() >= state["scheduled_end_ts"]:
             print("[Assassins] Scheduled end time reached — ending round")
             _end_round(client, reason="scheduled")
+
+    if state["status"] == "round_ended":
+        next_rnd_num = state["round_number"] + 1
+        next_rnd = _get_round(next_rnd_num)
+        if next_rnd and next_rnd.get("status") == "scheduled" and next_rnd.get("start_ts"):
+            if time.time() >= next_rnd["start_ts"]:
+                print(f"[Assassins] Auto-advancing to pre-scheduled round {next_rnd_num}")
+                _advance_to_round(client, next_rnd_num, next_rnd)
 
 
 def _assassins_bg_loop(client):
@@ -487,48 +533,91 @@ def _handle_join(body, client, respond):
     )
 
 
+def _build_start_modal_blocks(num_rounds=1, round_values=None):
+    """Build blocks for the game setup modal.
+
+    round_values — list of {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} used to
+    pre-fill dates when updating the modal after "Add Another Round" is clicked.
+    """
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "Schedule all rounds for the game. Each round starts at *8am* on its start date "
+                    "and ends at *11:59pm* on its end date.\n\n"
+                    "Players can join any time before Round 1 starts. "
+                    "Once eliminated, a player cannot continue in later rounds."
+                ),
+            },
+        },
+        {"type": "divider"},
+    ]
+
+    for i in range(num_rounds):
+        rnd_num = i + 1
+        rv = (round_values[i] if round_values and i < len(round_values) else {}) or {}
+
+        blocks.append({
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"Round {rnd_num}"},
+        })
+
+        start_el = {
+            "type": "datepicker",
+            "action_id": f"round_{rnd_num}_start",
+            "placeholder": {"type": "plain_text", "text": "Pick a date"},
+        }
+        if rv.get("start"):
+            start_el["initial_date"] = rv["start"]
+
+        blocks.append({
+            "type": "input",
+            "block_id": f"round_{rnd_num}_start_block",
+            "label": {"type": "plain_text", "text": f"Round {rnd_num} Start Date"},
+            "element": start_el,
+        })
+
+        end_el = {
+            "type": "datepicker",
+            "action_id": f"round_{rnd_num}_end",
+            "placeholder": {"type": "plain_text", "text": "Pick a date (optional)"},
+        }
+        if rv.get("end"):
+            end_el["initial_date"] = rv["end"]
+
+        blocks.append({
+            "type": "input",
+            "block_id": f"round_{rnd_num}_end_block",
+            "label": {"type": "plain_text", "text": f"Round {rnd_num} End Date"},
+            "element": end_el,
+            "optional": True,
+        })
+
+    blocks.append({"type": "divider"})
+    blocks.append({
+        "type": "actions",
+        "block_id": "add_round_actions",
+        "elements": [
+            {
+                "type": "button",
+                "action_id": "assassin_add_round",
+                "text": {"type": "plain_text", "text": "+ Add Another Round"},
+                "value": str(num_rounds),
+            }
+        ],
+    })
+
+    return blocks
+
+
 def _handle_start(body, client, respond):
     user_id = body["user_id"]
-    text = (body.get("text") or "").strip()
-    parts = text.split()
-    date_str = parts[1] if len(parts) > 1 else ""
-    end_date_str = parts[2] if len(parts) > 2 else ""
-
-    if not date_str:
-        _ephemeral(respond, "Usage: `/assassin start YYYY-MM-DD [end-YYYY-MM-DD]`\nThe optional second date schedules an automatic round end.")
-        return
-
-    try:
-        dt = datetime.strptime(date_str, "%Y-%m-%d")
-    except ValueError:
-        _ephemeral(respond, f"Invalid start date format `{date_str}`. Use YYYY-MM-DD (e.g. `2025-05-01`).")
-        return
-
-    scheduled_end_ts = None
-    if end_date_str:
-        try:
-            end_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
-        except ValueError:
-            _ephemeral(respond, f"Invalid end date format `{end_date_str}`. Use YYYY-MM-DD.")
-            return
-        if end_dt <= dt:
-            _ephemeral(respond, "End date must be after the start date.")
-            return
-        end_naive = end_dt.replace(hour=23, minute=59, second=59, microsecond=0)
-        scheduled_end_ts = TIMEZONE.localize(end_naive).timestamp()
-
-    start_naive = dt.replace(hour=8, minute=0, second=0, microsecond=0)
-    start_aware = TIMEZONE.localize(start_naive)
-    start_ts = start_aware.timestamp()
-
-    if start_ts < time.time() - 3600:
-        _ephemeral(respond, f"The date {date_str} is in the past. Please choose a future date.")
-        return
-
     state = _get_state()
 
     if state["status"] == "pending" and state.get("gm_id") != user_id:
-        _ephemeral(respond, "A round is already pending. Only the current GM can update it.")
+        _ephemeral(respond, "A game is already pending. Only the current GM can update it.")
         return
     if state["status"] == "active":
         _ephemeral(respond, "A round is already in progress. End it first with `/assassin end`.")
@@ -537,53 +626,17 @@ def _handle_start(body, client, respond):
         _ephemeral(respond, "A round just ended. Use `/assassin newround YYYY-MM-DD` to start the next round, or `/assassin endgame` to finish.")
         return
 
-    game_id = str(uuid.uuid4())
-    round_number = 1
-
-    db = _db()
-    db.collection(COL_GAME).document("current").set({
-        "game_id": game_id,
-        "status": "pending",
-        "gm_id": user_id,
-        "round_number": round_number,
-        "created_ts": time.time(),
-    })
-
-    db.collection(COL_ROUNDS).document(str(round_number)).set({
-        "round_number": round_number,
-        "status": "pending",
-        "start_date": date_str,
-        "start_ts": start_ts,
-        "scheduled_end_date": end_date_str or None,
-        "scheduled_end_ts": scheduled_end_ts,
-        "end_ts": None,
-        "player_order": [],
-    })
-
-    _set_state("pending", game_id=game_id, gm_id=user_id, round_number=round_number,
-               start_ts=start_ts, scheduled_end_ts=scheduled_end_ts)
-
-    end_note = f" Round 1 will auto-end at 11:59pm on {end_date_str}." if end_date_str else ""
-    _ephemeral(respond, f"Game created! You are the GM. Players can join with `/assassin join`. Round 1 targets assigned at 8am on {date_str}.{end_note}")
-
-    end_line = f" Round 1 ends automatically on *{end_date_str}*." if end_date_str else ""
-    client.chat_postMessage(
-        channel=ASSASSIN_CHANNEL_ID,
-        text=f"A new Water Assassins game has been created by <@{user_id}>! Join with `/assassin join`.",
-        blocks=[
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        ":droplet: *A new Water Assassins game is open!*\n\n"
-                        f"Created by <@{user_id}>. Round 1 targets assigned at *8am on {date_str}*."
-                        f"{end_line}\n\n"
-                        "Sign up with `/assassin join` before the round starts!"
-                    ),
-                },
-            }
-        ],
+    client.views_open(
+        trigger_id=body["trigger_id"],
+        view={
+            "type": "modal",
+            "callback_id": "assassin_start_modal",
+            "title": {"type": "plain_text", "text": "New Game Setup"},
+            "submit": {"type": "plain_text", "text": "Create Game"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "private_metadata": "1",
+            "blocks": _build_start_modal_blocks(1),
+        },
     )
 
 
@@ -1589,8 +1642,8 @@ def register_assassins_handlers(app):
                             "• `/assassin rules` — how-to-play info\n"
                             "• `/assassin join` — join the current game\n"
                             "• `/assassin leave` — leave before the round starts\n"
-                            "• `/assassin start YYYY-MM-DD [end-YYYY-MM-DD]` — (GM) create a new game with Round 1\n"
-                            "• `/assassin newround YYYY-MM-DD [end-YYYY-MM-DD]` — (GM) start the next round\n"
+                            "• `/assassin start` — (GM) open a form to create a new game and schedule all rounds\n"
+                            "• `/assassin newround YYYY-MM-DD [end-YYYY-MM-DD]` — (GM) manually start an unplanned next round\n"
                             "• `/assassin end` — (GM) end the current round immediately\n"
                             "• `/assassin end YYYY-MM-DD` — (GM) schedule the round to end on a date\n"
                             "• `/assassin endgame` — (GM) fully end the game\n"
@@ -1604,10 +1657,184 @@ def register_assassins_handlers(app):
             except Exception as e:
                 logger.exception(f"[Assassins] cmd error: {e}")
 
-        if sub in ("report", "eliminate", "add"):
+        if sub in ("report", "eliminate", "add", "start"):
             run()
         else:
             threading.Thread(target=run, daemon=True).start()
+
+    @app.action("assassin_add_round")
+    def action_add_round(ack, body, client, logger):
+        ack()
+        try:
+            view = body["view"]
+            num_rounds = int(view.get("private_metadata") or "1")
+
+            # Preserve values the GM has already filled in
+            state_values = view["state"]["values"]
+            round_values = []
+            for i in range(1, num_rounds + 1):
+                start = (state_values.get(f"round_{i}_start_block") or {}).get(
+                    f"round_{i}_start", {}
+                ).get("selected_date")
+                end = (state_values.get(f"round_{i}_end_block") or {}).get(
+                    f"round_{i}_end", {}
+                ).get("selected_date")
+                round_values.append({"start": start, "end": end})
+
+            new_num = num_rounds + 1
+            client.views_update(
+                view_id=view["id"],
+                view={
+                    "type": "modal",
+                    "callback_id": "assassin_start_modal",
+                    "title": {"type": "plain_text", "text": "New Game Setup"},
+                    "submit": {"type": "plain_text", "text": "Create Game"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "private_metadata": str(new_num),
+                    "blocks": _build_start_modal_blocks(new_num, round_values),
+                },
+            )
+        except Exception as e:
+            logger.exception(f"[Assassins] action_add_round error: {e}")
+
+    @app.view("assassin_start_modal")
+    def view_start_game(ack, body, client, logger):
+        num_rounds = int(body["view"].get("private_metadata") or "1")
+        state_values = body["view"]["state"]["values"]
+
+        rounds = []
+        errors = {}
+
+        for i in range(1, num_rounds + 1):
+            start_date = (state_values.get(f"round_{i}_start_block") or {}).get(
+                f"round_{i}_start", {}
+            ).get("selected_date")
+            end_date = (state_values.get(f"round_{i}_end_block") or {}).get(
+                f"round_{i}_end", {}
+            ).get("selected_date")
+
+            if not start_date:
+                errors[f"round_{i}_start_block"] = f"Round {i} start date is required."
+                continue
+
+            dt = datetime.strptime(start_date, "%Y-%m-%d")
+            start_naive = dt.replace(hour=8, minute=0, second=0, microsecond=0)
+            start_ts = TIMEZONE.localize(start_naive).timestamp()
+
+            if start_ts < time.time() - 3600:
+                errors[f"round_{i}_start_block"] = f"Round {i} start date is in the past."
+                continue
+
+            scheduled_end_ts = None
+            if end_date:
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+                if end_dt <= dt:
+                    errors[f"round_{i}_end_block"] = (
+                        f"Round {i} end date must be after its start date."
+                    )
+                    continue
+                end_naive = end_dt.replace(hour=23, minute=59, second=59, microsecond=0)
+                scheduled_end_ts = TIMEZONE.localize(end_naive).timestamp()
+
+            rounds.append({
+                "round_number": i,
+                "start_date": start_date,
+                "start_ts": start_ts,
+                "end_date": end_date,
+                "scheduled_end_ts": scheduled_end_ts,
+            })
+
+        if errors:
+            ack(response_action="errors", errors=errors)
+            return
+
+        if not rounds:
+            ack(response_action="errors", errors={
+                "round_1_start_block": "At least one round with a start date is required."
+            })
+            return
+
+        cur_state = _get_state()
+        if cur_state["status"] == "active":
+            ack(response_action="errors", errors={
+                "round_1_start_block": "A round is already in progress. End it first."
+            })
+            return
+
+        ack()
+
+        def run():
+            try:
+                user_id = body["user"]["id"]
+                game_id = str(uuid.uuid4())
+                db = _db()
+
+                db.collection(COL_GAME).document("current").set({
+                    "game_id": game_id,
+                    "status": "pending",
+                    "gm_id": user_id,
+                    "round_number": 1,
+                    "total_rounds": len(rounds),
+                    "created_ts": time.time(),
+                })
+
+                for rnd in rounds:
+                    status = "pending" if rnd["round_number"] == 1 else "scheduled"
+                    db.collection(COL_ROUNDS).document(str(rnd["round_number"])).set({
+                        "round_number": rnd["round_number"],
+                        "status": status,
+                        "start_date": rnd["start_date"],
+                        "start_ts": rnd["start_ts"],
+                        "scheduled_end_date": rnd["end_date"],
+                        "scheduled_end_ts": rnd["scheduled_end_ts"],
+                        "end_ts": None,
+                        "player_order": [],
+                    })
+
+                _set_state(
+                    "pending",
+                    game_id=game_id,
+                    gm_id=user_id,
+                    round_number=1,
+                    start_ts=rounds[0]["start_ts"],
+                    scheduled_end_ts=rounds[0].get("scheduled_end_ts"),
+                )
+
+                schedule_lines = []
+                for rnd in rounds:
+                    line = f"• *Round {rnd['round_number']}:* starts {rnd['start_date']}"
+                    if rnd.get("end_date"):
+                        line += f", ends {rnd['end_date']}"
+                    schedule_lines.append(line)
+
+                total_rounds = len(rounds)
+                schedule_text = "\n".join(schedule_lines)
+
+                client.chat_postMessage(
+                    channel=ASSASSIN_CHANNEL_ID,
+                    text=(
+                        f"A new {total_rounds}-round Water Assassins game has been created "
+                        f"by <@{user_id}>! Join with `/assassin join`."
+                    ),
+                    blocks=[
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": (
+                                    ":droplet: *A new Water Assassins game is open!*\n\n"
+                                    f"Created by <@{user_id}>. *{total_rounds} round(s)* planned.\n\n"
+                                    f"{schedule_text}\n\n"
+                                    "Sign up with `/assassin join` before Round 1 starts!"
+                                ),
+                            },
+                        }
+                    ],
+                )
+            except Exception as e:
+                logger.exception(f"[Assassins] view_start_game error: {e}")
+
+        threading.Thread(target=run, daemon=True).start()
 
     @app.view("assassin_kill_modal")
     def view_kill_report(ack, body, client, logger):

@@ -645,26 +645,8 @@ def _handle_start(body, client, respond):
         _ephemeral(respond, "A round just ended. Use `/assassin newround YYYY-MM-DD` to start the next round, or `/assassin endgame` to finish.")
         return
 
-    # Fetch channel members to pre-populate the players picker
-    participants = []
-    try:
-        bot_user_id = client.auth_test()["user_id"]
-        cursor = None
-        while True:
-            kwargs = {"channel": ASSASSIN_CHANNEL_ID, "limit": 200}
-            if cursor:
-                kwargs["cursor"] = cursor
-            result = client.conversations_members(**kwargs)
-            for uid in result.get("members", []):
-                if uid != bot_user_id and uid != "USLACKBOT":
-                    participants.append(uid)
-            cursor = (result.get("response_metadata") or {}).get("next_cursor")
-            if not cursor:
-                break
-    except Exception as e:
-        print(f"[Assassins] Failed to fetch channel members: {e}")
-
-    client.views_open(
+    # Open the modal immediately so we don't miss the 3-second trigger_id window
+    open_result = client.views_open(
         trigger_id=body["trigger_id"],
         view={
             "type": "modal",
@@ -673,9 +655,47 @@ def _handle_start(body, client, respond):
             "submit": {"type": "plain_text", "text": "Create Game"},
             "close": {"type": "plain_text", "text": "Cancel"},
             "private_metadata": "1",
-            "blocks": _build_start_modal_blocks(1, participants=participants),
+            "blocks": _build_start_modal_blocks(1),
         },
     )
+
+    # Fetch channel members and update the modal to pre-populate the players picker
+    view_id = open_result["view"]["id"]
+
+    def prefill_members():
+        try:
+            bot_user_id = client.auth_test()["user_id"]
+            participants = []
+            cursor = None
+            while True:
+                kwargs = {"channel": ASSASSIN_CHANNEL_ID, "limit": 200}
+                if cursor:
+                    kwargs["cursor"] = cursor
+                result = client.conversations_members(**kwargs)
+                for uid in result.get("members", []):
+                    if uid != bot_user_id and uid != "USLACKBOT":
+                        participants.append(uid)
+                cursor = (result.get("response_metadata") or {}).get("next_cursor")
+                if not cursor:
+                    break
+
+            if participants:
+                client.views_update(
+                    view_id=view_id,
+                    view={
+                        "type": "modal",
+                        "callback_id": "assassin_start_modal",
+                        "title": {"type": "plain_text", "text": "New Game Setup"},
+                        "submit": {"type": "plain_text", "text": "Create Game"},
+                        "close": {"type": "plain_text", "text": "Cancel"},
+                        "private_metadata": "1",
+                        "blocks": _build_start_modal_blocks(1, participants=participants),
+                    },
+                )
+        except Exception as e:
+            print(f"[Assassins] Failed to prefill channel members: {e}")
+
+    threading.Thread(target=prefill_members, daemon=True).start()
 
 
 def _handle_newround(body, client, respond):

@@ -1599,6 +1599,12 @@ def _handle_players(body, client, respond):
 # Debug handlers
 # ---------------------------------------------------------------------------
 
+def _debug_allowed(user_id):
+    raw = os.environ.get("ASSASSIN_DEBUG_USERS", "")
+    allowed = [uid.strip() for uid in raw.split(",") if uid.strip()]
+    return user_id in allowed
+
+
 def _handle_debug(body, client, respond, raw_text):
     """
     Debug subcommands (ephemeral only):
@@ -1609,6 +1615,10 @@ def _handle_debug(body, client, respond, raw_text):
       /assassin debug addbot [n]   — add n fake bot players to the pending round (default 2)
       /assassin debug safezone     — immediately trigger a safe zone right now
     """
+    if not _debug_allowed(body["user_id"]):
+        _ephemeral(respond, "You are not authorized to use debug commands.")
+        return
+
     parts = raw_text.lower().split()
     subcmd = parts[1] if len(parts) > 1 else ""
 

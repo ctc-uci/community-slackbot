@@ -191,6 +191,7 @@ def complete_gmail_oauth(callback_full_url: str) -> tuple[bool, str]:
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json())
         logger.info("Gmail: token saved via OAuth callback to %s", token_path)
+        print(f"[Gmail] OAuth successful. Token saved. Gmail polling will start shortly.")
         return (True, "")
     except Exception as e:
         logger.exception("Gmail: OAuth callback exchange failed")
@@ -222,11 +223,6 @@ def get_gmail_credentials():
 
             # OAuth callback URL configured (e.g. Railway): user will visit /gmail/oauth in browser
             if _gmail_oauth_callback_base():
-                print(
-                    f"[Gmail] WARNING: No token found at {token_path}. "
-                    "Gmail polling will not start until you authorize. "
-                    f"Visit https://{os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'your-app.up.railway.app')}/gmail/oauth in your browser to complete OAuth."
-                )
                 raise FileNotFoundError(
                     "Gmail token missing. Visit this app's /gmail/oauth URL in your browser to authorize "
                     f"(e.g. https://your-app.up.railway.app/gmail/oauth). Token path: {token_path}"
@@ -623,10 +619,14 @@ def _poll_gmail_loop() -> None:
     slack_client = WebClient(token=token)
     service = None
     token_missing_logged = False
+    service_ready_logged = False
     while True:
         try:
             if service is None:
                 service = get_gmail_service()
+            if not service_ready_logged:
+                print(f"[Gmail] Token found. Connected to Gmail. Polling {GMAIL_MONITORED_EMAIL} for new emails.")
+                service_ready_logged = True
             start_id = _load_history_id()
             if start_id:
                 try:
@@ -663,6 +663,11 @@ def _poll_gmail_loop() -> None:
                         _process_new_message(service, mid, slack_client)
         except FileNotFoundError as e:
             if not token_missing_logged:
+                railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "your-app.up.railway.app")
+                print(
+                    f"[Gmail] WARNING: No token found. Gmail polling will not start until you authorize. "
+                    f"Visit https://{railway_domain}/gmail/oauth in your browser to complete OAuth."
+                )
                 logger.info("Gmail: token missing. %s", e)
                 token_missing_logged = True
         except Exception as e:

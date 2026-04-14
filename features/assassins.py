@@ -823,7 +823,7 @@ def _handle_report(body, client, respond):
             "title": {"type": "plain_text", "text": "Report a Kill"},
             "submit": {"type": "plain_text", "text": "Submit Report"},
             "close": {"type": "plain_text", "text": "Cancel"},
-            "private_metadata": f"{user_id}|{target_id}|{round_number}|{evidence_link}",
+            "private_metadata": f"{user_id}|{target_id}|{round_number}|{evidence_link}|{evidence_ts}",
             "blocks": [
                 {
                     "type": "section",
@@ -1906,6 +1906,7 @@ def register_assassins_handlers(app):
                 target_id = parts[1]
                 round_number = int(parts[2])
                 evidence_link = parts[3] if len(parts) > 3 and parts[3] != "None" else None
+                evidence_ts = parts[4] if len(parts) > 4 and parts[4] != "None" else None
 
                 values = body["view"]["state"]["values"]
                 checked = values.get("confirmation_block", {}).get("confirmation_check", {}).get("selected_options", [])

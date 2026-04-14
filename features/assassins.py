@@ -1600,8 +1600,8 @@ def _handle_players(body, client, respond):
 # ---------------------------------------------------------------------------
 
 def _debug_allowed(user_id):
-    raw = os.environ.get("ASSASSIN_DEBUG_USERS", "")
-    allowed = [uid.strip() for uid in raw.split(",") if uid.strip()]
+    raw = os.environ.get("ASSASSIN_DEBUG_USERS", "").strip().strip('"').strip("'")
+    allowed = [uid.strip().strip('"').strip("'") for uid in raw.split(",") if uid.strip()]
     return user_id in allowed
 
 

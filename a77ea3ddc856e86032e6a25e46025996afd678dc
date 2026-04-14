@@ -1,0 +1,23 @@
+features/assassins.py
+  a436ced386423651 7,24-27,43-48,60-65,454-606,632-665,1610,1627-1628,1638-1639,1845-1871
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "a77ea3ddc856e86032e6a25e46025996afd678dc",
+  "prompts": {
+    "a436ced386423651": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b19b5261-14be-4641-ad45-f5d4f15eb7a2",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Brendan Lieu",
+      "messages": [],
+      "total_additions": 348,
+      "total_deletions": 46,
+      "accepted_lines": 238,
+      "overriden_lines": 15
+    }
+  }
+}

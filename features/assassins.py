@@ -1869,14 +1869,17 @@ def _debug_safezone(client, respond):
         return
 
     location = random.choice(SAFE_ZONE_LOCATIONS)
+    activate_ts = time.time() + 1800  # pretend it starts in 30 min for the warning
+
     with _state_lock:
         _game_state["safe_zone_next_ts"] = None
         _game_state["safe_zone_warning_ts"] = None
         _game_state["safe_zone_warning_sent"] = False
         _game_state["safe_zone_location"] = location
 
+    _warn_safe_zone(client, location, activate_ts)
     _activate_safe_zone(client, location)
-    _ephemeral(respond, f"[DEBUG] Safe zone forced at *{location}*.")
+    _ephemeral(respond, f"[DEBUG] Safe zone forced at *{location}* — warning and activation both sent.")
 
 
 # ---------------------------------------------------------------------------

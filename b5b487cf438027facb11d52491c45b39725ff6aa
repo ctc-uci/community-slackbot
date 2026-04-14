@@ -1,0 +1,23 @@
+features/gmail.py
+  4caefe288de55006 194,622,627-629,666-670
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "b5b487cf438027facb11d52491c45b39725ff6aa",
+  "prompts": {
+    "4caefe288de55006": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e5367cf8-596d-45fa-88f8-d85b295705e9",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Brendan Lieu",
+      "messages": [],
+      "total_additions": 10,
+      "total_deletions": 5,
+      "accepted_lines": 10,
+      "overriden_lines": 0
+    }
+  }
+}

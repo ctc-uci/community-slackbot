@@ -1616,7 +1616,14 @@ def _handle_debug(body, client, respond, raw_text):
       /assassin debug safezone     — immediately trigger a safe zone right now
     """
     if not _debug_allowed(body["user_id"]):
-        _ephemeral(respond, "You are not authorized to use debug commands.")
+        raw = os.environ.get("ASSASSIN_DEBUG_USERS", "").strip().strip('"').strip("'")
+        allowed = [uid.strip().strip('"').strip("'") for uid in raw.split(",") if uid.strip()]
+        allowed_str = ", ".join(f"`{uid}`" for uid in allowed) if allowed else "_(none)_"
+        _ephemeral(respond, (
+            f"You are not authorized to use debug commands.\n"
+            f"*Your user ID:* `{body['user_id']}`\n"
+            f"*Allowed users:* {allowed_str}"
+        ))
         return
 
     parts = raw_text.lower().split()

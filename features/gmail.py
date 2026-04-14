@@ -222,6 +222,11 @@ def get_gmail_credentials():
 
             # OAuth callback URL configured (e.g. Railway): user will visit /gmail/oauth in browser
             if _gmail_oauth_callback_base():
+                print(
+                    f"[Gmail] WARNING: No token found at {token_path}. "
+                    "Gmail polling will not start until you authorize. "
+                    f"Visit https://{os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'your-app.up.railway.app')}/gmail/oauth in your browser to complete OAuth."
+                )
                 raise FileNotFoundError(
                     "Gmail token missing. Visit this app's /gmail/oauth URL in your browser to authorize "
                     f"(e.g. https://your-app.up.railway.app/gmail/oauth). Token path: {token_path}"

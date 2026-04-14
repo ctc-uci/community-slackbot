@@ -4,7 +4,7 @@ import random
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytz
 from firebase_admin import firestore
@@ -21,6 +21,32 @@ COL_PLAYERS = "assassin_players"
 COL_REPORTS = "assassin_kill_reports"
 
 # ---------------------------------------------------------------------------
+# Safe zone constants
+# ---------------------------------------------------------------------------
+
+SAFE_ZONE_LOCATIONS = [
+    "Science Library 2nd Floor",
+    "Science Library 4th Floor",
+    "Science Library 5th Floor",
+    "Anthill Pub & Grille",
+    "CSL",
+    "Gateway Study Center Basement",
+    "The Ring Road tunnel near Student Center",
+    "Donald Bren Hall 2nd Floor",
+    "Donald Bren Hall 6th Floor",
+    "Humanities Gateway 2nd Floor (Ryan's Secret Spot)",
+    "Taco Bell",
+    "ALP 3rd Floor",
+    "The Hill (UCI Merch Store)",
+    "Langson Library 5th floor",
+    "Alrich Park Grass (Have to be touching grass to be in the safe zone)"
+]
+
+SAFE_ZONE_DURATION_SECONDS = 3600  # 1 hour
+SAFE_ZONE_WINDOW_START_HOUR = 10   # 10am
+SAFE_ZONE_WINDOW_END_HOUR = 18     # 6pm (last safe zone must start by 5pm to end by 6pm)
+
+# ---------------------------------------------------------------------------
 # In-memory state (restored from Firestore on startup)
 # ---------------------------------------------------------------------------
 
@@ -31,6 +57,12 @@ _game_state = {
     "round_number": 0,
     "start_ts": None,
     "scheduled_end_ts": None,
+    # Safe zone state
+    "safe_zone_next_ts": None,      # epoch when the safe zone goes live
+    "safe_zone_warning_ts": None,   # epoch for the 30-min heads-up (safe_zone_next_ts - 1800)
+    "safe_zone_warning_sent": False, # whether the 30-min warning has been posted
+    "safe_zone_location": None,     # location chosen at schedule time (used for warning + activation)
+    "safe_zone_expires_ts": None,   # epoch when the active safe zone expires
 }
 _state_lock = threading.Lock()
 
@@ -419,6 +451,160 @@ def _advance_to_round(client, round_number, round_doc):
 
 
 # ---------------------------------------------------------------------------
+# Safe zone helpers
+# ---------------------------------------------------------------------------
+
+def _is_last_round():
+    """Return True if the current round is the final round of the game."""
+    state = _get_state()
+    game = _get_game()
+    if not game:
+        return False
+    total_rounds = game.get("total_rounds")
+    if not total_rounds:
+        return False
+    return state.get("round_number", 0) >= total_rounds
+
+
+def _next_safe_zone_ts():
+    """Pick a random time today or the next valid weekday between 10am and 5pm (PT).
+
+    Safe zones start no later than 5pm so they end by 6pm.
+    Returns an epoch timestamp.
+    """
+    now = datetime.now(TIMEZONE)
+
+    def _random_ts_on_date(year, month, day):
+        """Return a random epoch timestamp between 10am and 5pm on the given date."""
+        start_hour = SAFE_ZONE_WINDOW_START_HOUR
+        end_hour = SAFE_ZONE_WINDOW_END_HOUR - 1  # last start at 5pm → ends at 6pm
+        hour = random.randint(start_hour, end_hour)
+        minute = random.randint(0, 59)
+        naive = datetime(year, month, day, hour, minute, 0)
+        return TIMEZONE.localize(naive).timestamp()
+
+    # Try today first (if we have at least 15 minutes left in the window)
+    window_close = now.replace(hour=SAFE_ZONE_WINDOW_END_HOUR - 1, minute=45, second=0, microsecond=0)
+    if now.weekday() < 5 and now < window_close:
+        candidate = _random_ts_on_date(now.year, now.month, now.day)
+        # Must be at least 5 minutes in the future
+        if candidate > time.time() + 300:
+            return candidate
+
+    # Otherwise advance to the next weekday
+    candidate_date = now.date() + timedelta(days=1)
+    while True:
+        # 0=Mon … 4=Fri
+        if candidate_date.weekday() < 5:
+            return _random_ts_on_date(candidate_date.year, candidate_date.month, candidate_date.day)
+        candidate_date += timedelta(days=1)
+
+
+def _schedule_safe_zone():
+    """Pick a location and schedule the next safe zone, including the 30-min warning."""
+    ts = _next_safe_zone_ts()
+    location = random.choice(SAFE_ZONE_LOCATIONS)
+    warning_ts = ts - 1800  # 30 minutes before
+    with _state_lock:
+        _game_state["safe_zone_next_ts"] = ts
+        _game_state["safe_zone_warning_ts"] = warning_ts
+        _game_state["safe_zone_warning_sent"] = False
+        _game_state["safe_zone_location"] = location
+        _game_state["safe_zone_expires_ts"] = None
+    dt = datetime.fromtimestamp(ts, tz=TIMEZONE)
+    print(f"[Assassins] Next safe zone scheduled for {dt.strftime('%Y-%m-%d %H:%M %Z')} at {location}")
+
+
+def _warn_safe_zone(client, location, start_ts):
+    """Post the 30-minute heads-up for an upcoming safe zone."""
+    start_dt = datetime.fromtimestamp(start_ts, tz=TIMEZONE)
+    start_str = start_dt.strftime("%-I:%M %p")
+
+    with _state_lock:
+        _game_state["safe_zone_warning_sent"] = True
+
+    client.chat_postMessage(
+        channel=ASSASSIN_CHANNEL_ID,
+        text=f":hourglass: Safe zone incoming: {location} at {start_str} PT (in 30 minutes)",
+        blocks=[
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f":hourglass: *Safe Zone in 30 minutes!*\n\n"
+                        f"*Location:* {location}\n"
+                        f"*Starts at:* {start_str} PT\n\n"
+                        "Use it to regroup — no eliminations allowed at this location once it goes live."
+                    ),
+                },
+            }
+        ],
+    )
+    print(f"[Assassins] Safe zone 30-min warning sent: {location} at {start_str}")
+
+
+def _activate_safe_zone(client, location):
+    """Activate the safe zone and announce it."""
+    expires_ts = time.time() + SAFE_ZONE_DURATION_SECONDS
+    expires_dt = datetime.fromtimestamp(expires_ts, tz=TIMEZONE)
+    expires_str = expires_dt.strftime("%-I:%M %p")
+
+    with _state_lock:
+        _game_state["safe_zone_expires_ts"] = expires_ts
+        _game_state["safe_zone_next_ts"] = None
+        _game_state["safe_zone_warning_ts"] = None
+
+    client.chat_postMessage(
+        channel=ASSASSIN_CHANNEL_ID,
+        text=f":shield: Safe zone active: {location} (until {expires_str} PT)",
+        blocks=[
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f":shield: *Safe Zone Active!*\n\n"
+                        f"*Location:* {location}\n"
+                        f"*Duration:* 1 hour (until *{expires_str} PT*)\n\n"
+                        "No eliminations may occur at this location while the safe zone is active. "
+                        "Use it to breathe — but the hunt resumes the moment it ends."
+                    ),
+                },
+            }
+        ],
+    )
+    print(f"[Assassins] Safe zone activated: {location}, expires {expires_str}")
+
+
+def _expire_safe_zone(client):
+    """Announce safe zone expiry and schedule the next one."""
+    with _state_lock:
+        location = _game_state.get("safe_zone_location", "the safe zone")
+        _game_state["safe_zone_location"] = None
+        _game_state["safe_zone_expires_ts"] = None
+
+    client.chat_postMessage(
+        channel=ASSASSIN_CHANNEL_ID,
+        text=f":warning: Safe zone at {location} has ended. The hunt resumes!",
+        blocks=[
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f":warning: *Safe zone at {location} has ended.*\n\n"
+                        "The hunt is back on — stay sharp! :droplet:"
+                    ),
+                },
+            }
+        ],
+    )
+    print(f"[Assassins] Safe zone expired: {location}")
+    _schedule_safe_zone()
+
+
+# ---------------------------------------------------------------------------
 # Background thread
 # ---------------------------------------------------------------------------
 
@@ -442,6 +628,40 @@ def _tick(client):
             if time.time() >= next_rnd["start_ts"]:
                 print(f"[Assassins] Auto-advancing to pre-scheduled round {next_rnd_num}")
                 _advance_to_round(client, next_rnd_num, next_rnd)
+
+    # --- Safe zone tick (only during active non-final rounds) ---
+    if state["status"] == "active" and not _is_last_round():
+        now = time.time()
+
+        # Check if an active safe zone has expired
+        expires_ts = state.get("safe_zone_expires_ts")
+        if expires_ts and now >= expires_ts:
+            _expire_safe_zone(client)
+            return  # state mutated; next tick will handle scheduling
+
+        # Check if it's time to activate the safe zone
+        next_ts = state.get("safe_zone_next_ts")
+        if next_ts and now >= next_ts and not expires_ts:
+            _activate_safe_zone(client, state["safe_zone_location"])
+            return
+
+        # Check if it's time to send the 30-min warning
+        warning_ts = state.get("safe_zone_warning_ts")
+        if warning_ts and now >= warning_ts and not state.get("safe_zone_warning_sent"):
+            _warn_safe_zone(client, state["safe_zone_location"], next_ts)
+            return
+
+        # If nothing is scheduled or active, schedule the next safe zone
+        if not expires_ts and not next_ts:
+            _schedule_safe_zone()
+    else:
+        # Round not active — clear any lingering safe zone state silently
+        with _state_lock:
+            _game_state["safe_zone_next_ts"] = None
+            _game_state["safe_zone_warning_ts"] = None
+            _game_state["safe_zone_warning_sent"] = False
+            _game_state["safe_zone_location"] = None
+            _game_state["safe_zone_expires_ts"] = None
 
 
 def _assassins_bg_loop(client):
@@ -1387,6 +1607,7 @@ def _handle_debug(body, client, respond, raw_text):
       /assassin debug kill         — auto-validate a kill for you against your current target
       /assassin debug reset        — wipe all Firestore game data and reset in-memory state
       /assassin debug addbot [n]   — add n fake bot players to the pending round (default 2)
+      /assassin debug safezone     — immediately trigger a safe zone right now
     """
     parts = raw_text.lower().split()
     subcmd = parts[1] if len(parts) > 1 else ""
@@ -1403,6 +1624,8 @@ def _handle_debug(body, client, respond, raw_text):
         parts2 = raw_text.split()
         n = int(parts2[2]) if len(parts2) > 2 and parts2[2].isdigit() else 2
         _debug_addbot(respond, n)
+    elif subcmd == "safezone":
+        _debug_safezone(client, respond)
     elif subcmd == "echo":
         _ephemeral(respond, f"raw text: `{raw_text}`")
     else:
@@ -1412,7 +1635,8 @@ def _handle_debug(body, client, respond, raw_text):
             "• `/assassin debug assign` — force target assignment now (skips 8am)\n"
             "• `/assassin debug kill` — instantly validate your kill against your current target\n"
             "• `/assassin debug reset` — wipe all game data and reset state\n"
-            "• `/assassin debug addbot [n]` — add n fake bot players to the pending round (default 2)"
+            "• `/assassin debug addbot [n]` — add n fake bot players to the pending round (default 2)\n"
+            "• `/assassin debug safezone` — immediately trigger a safe zone right now"
         ))
 
 
@@ -1616,6 +1840,33 @@ def _debug_reset(respond):
         _game_state["scheduled_end_ts"] = None
 
     _ephemeral(respond, "[DEBUG] All game data wiped. State reset to `none`.")
+
+
+def _debug_safezone(client, respond):
+    state = _get_state()
+
+    if state["status"] != "active":
+        _ephemeral(respond, f"[DEBUG] Round is not active (status: `{state['status']}`). Cannot trigger safe zone.")
+        return
+
+    if _is_last_round():
+        _ephemeral(respond, "[DEBUG] This is the last round — safe zones are disabled.")
+        return
+
+    if state.get("safe_zone_expires_ts"):
+        location = state.get("safe_zone_location", "unknown")
+        _ephemeral(respond, f"[DEBUG] A safe zone is already active at *{location}*.")
+        return
+
+    location = random.choice(SAFE_ZONE_LOCATIONS)
+    with _state_lock:
+        _game_state["safe_zone_next_ts"] = None
+        _game_state["safe_zone_warning_ts"] = None
+        _game_state["safe_zone_warning_sent"] = False
+        _game_state["safe_zone_location"] = location
+
+    _activate_safe_zone(client, location)
+    _ephemeral(respond, f"[DEBUG] Safe zone forced at *{location}*.")
 
 
 # ---------------------------------------------------------------------------

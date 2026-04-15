@@ -55,11 +55,20 @@ def register_ridesheet_handlers(app):
             capacity = car.get("capacity", 4)
             pass_str = ", ".join(f"<@{p}>" for p in passengers) if passengers else "_None yet_"
             
+            # Fetch direction and create the warning string if needed
+            direction = car.get("direction", "both")
+            dir_str = ""
+            if direction == "there":
+                dir_str = "\n⚠️ *Note:* Driving THERE only"
+            elif direction == "return":
+                dir_str = "\n⚠️ *Note:* Returning ONLY"
+
             desc = car.get("description", "").strip()
-            desc_str = f"\n📝 *Driver Notes:* {desc}" if desc else ""
+            desc_str = f"\n📝 *Notes:* {desc}" if desc else ""
             
             row_text = (
-                f"🚗 *Driver:* <@{driver_id}>  |  🕰️ *Leaves:* {car.get('departure', 'TBD')}  |  💺 *Capacity:* {len(passengers)}/{capacity}\n"
+                f"🚗 *Driver:* <@{driver_id}>  |  🕰️ *Leaves:* {car.get('departure', 'TBD')}  |  💺 *Capacity:* {len(passengers)}/{capacity}"
+                f"{dir_str}\n"
                 f"🧍 *Passengers:* {pass_str}"
                 f"{desc_str}"
             )
@@ -277,8 +286,10 @@ def register_ridesheet_handlers(app):
 
         state = get_state(channel_id, message_ts)
         car = state.get("cars", {}).get(user_id, {}) if state else {}
+        
         existing_passengers = car.get("passengers", [])
         existing_desc = car.get("description", "")
+        existing_direction = car.get("direction", "both") # Defaults to "both"
         
         passenger_element = {
             "type": "multi_users_select", 
@@ -288,15 +299,25 @@ def register_ridesheet_handlers(app):
         if existing_passengers:
             passenger_element["initial_users"] = existing_passengers
 
-        # Safely build description element
+        # Build description element safely
         desc_element = {
             "type": "plain_text_input", 
             "action_id": "description_input", 
             "multiline": True,
-            "placeholder": {"type": "plain_text", "text": "e.g., Poop in the back!"}
+            "placeholder": {"type": "plain_text", "text": "e.g., Poop in trunk!"}
         }
         if existing_desc:
             desc_element["initial_value"] = existing_desc
+
+        # Build direction element
+        direction_options = [
+            {"text": {"type": "plain_text", "text": "🔄 Both Ways (Default)"}, "value": "both"},
+            {"text": {"type": "plain_text", "text": "➡️ Driving THERE only"}, "value": "there"},
+            {"text": {"type": "plain_text", "text": "⬅️ Returning ONLY"}, "value": "return"}
+        ]
+        
+        # Find the matching initial option based on saved state
+        initial_dir_option = next((opt for opt in direction_options if opt["value"] == existing_direction), direction_options[0])
 
         client.views_open(
             trigger_id=body["trigger_id"],
@@ -334,6 +355,17 @@ def register_ridesheet_handlers(app):
                     },
                     {
                         "type": "input",
+                        "block_id": "direction_block",
+                        "element": {
+                            "type": "static_select",
+                            "action_id": "direction_input",
+                            "options": direction_options,
+                            "initial_option": initial_dir_option
+                        },
+                        "label": {"type": "plain_text", "text": "Ride Direction"}
+                    },
+                    {
+                        "type": "input",
                         "block_id": "passengers_block",
                         "optional": True,  
                         "element": passenger_element,
@@ -342,7 +374,7 @@ def register_ridesheet_handlers(app):
                     {
                         "type": "input",
                         "block_id": "description_block",
-                        "optional": True,  # Make it optional so drivers aren't forced to write a note
+                        "optional": True,  
                         "element": desc_element,
                         "label": {"type": "plain_text", "text": "Notes / Description"}
                     }
@@ -367,11 +399,12 @@ def register_ridesheet_handlers(app):
         dep = f"<!date^{dep_timestamp}^{{date_short}} at {{time}}|Time: {dep_timestamp}>"
 
         passengers = vals["passengers_block"]["passengers_input"]["selected_users"]
-        
         if user_id in passengers:
             passengers.remove(user_id)
 
         desc = vals["description_block"]["description_input"]["value"] or ""
+        
+        direction = vals["direction_block"]["direction_input"]["selected_option"]["value"]
 
         state = get_state(chan, ts)
         if state:
@@ -380,7 +413,8 @@ def register_ridesheet_handlers(app):
                 "capacity": cap,
                 "departure": dep,
                 "passengers": passengers,
-                "description": desc
+                "description": desc,
+                "direction": direction 
             }
             save_state(chan, ts, state)
             blocks = _build_ridesheet_blocks(state, chan, ts)

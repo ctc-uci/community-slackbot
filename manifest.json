@@ -17,7 +17,7 @@
         "usage_hint": "edit | recount | leaderboard"
       },
       {
-        "command": "/matchy",
+        "command": "/matchycount",
         "description": "Track Matchy participation",
         "usage_hint": "leaderboard | edit | recount"
       }

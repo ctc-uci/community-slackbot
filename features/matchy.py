@@ -7,12 +7,12 @@ Both sender and all unique @mentions in a message count as one participation eac
 Counting strategy (incremental):
 - Stores last_processed_ts in Firebase (matchy_meta/state)
 - On startup: silent catch-up (process any messages missed while offline)
-- Admins can force a full recount via /matchy recount at any time
+- Admins can force a full recount via /matchycount recount at any time
 
 Admin commands:
-- /matchy edit    — manually set a user's participation count
-- /matchy recount — full history recount (resets incremental pointer)
-- /matchy leaderboard — show the participation leaderboard (ephemeral)
+- /matchycount edit    — manually set a user's participation count
+- /matchycount recount — full history recount (resets incremental pointer)
+- /matchycount leaderboard — show the participation leaderboard (ephemeral)
 """
 import os
 import re
@@ -261,7 +261,7 @@ def register_matchy_handlers(app):
     def _check_admin(user_id: str) -> bool:
         return user_id in ADMIN_USER_IDS
 
-    @app.command("/matchy")
+    @app.command("/matchycount")
     def cmd_matchy(ack, body, client, logger):
         text = (body.get("text") or "").strip().lower()
         user_id = body["user_id"]
@@ -371,9 +371,9 @@ def register_matchy_handlers(app):
                 user=user_id,
                 text=(
                     "*Matchy commands:*\n"
-                    "• `/matchy leaderboard` — view the participation leaderboard\n"
-                    "• `/matchy edit` — edit a user's participation count _(admin only)_\n"
-                    "• `/matchy recount` — full history recount _(admin only)_"
+                    "• `/matchycount leaderboard` — view the participation leaderboard\n"
+                    "• `/matchycount edit` — edit a user's participation count _(admin only)_\n"
+                    "• `/matchycount recount` — full history recount _(admin only)_"
                 ),
             )
 

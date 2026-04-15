@@ -23,6 +23,10 @@ register_ridesheet_handlers(app)
 register_spottings_handlers(app)
 register_matchy_handlers(app)
 
+@app.event("message")
+def handle_message_events(body, logger):
+    pass
+
 
 def _start_oauth_server():
     """Run HTTP server for Gmail OAuth callback (e.g. /gmail/oauth on Railway)."""

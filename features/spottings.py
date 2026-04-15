@@ -539,7 +539,12 @@ def register_spottings_handlers(app):
             client.chat_postEphemeral(
                 channel=body.get("channel_id", ""),
                 user=user_id,
-                text="Usage: `/spottings edit` | `/spottings recount` | `/spottings leaderboard`",
+                text=(
+                    "*Spottings commands:*\n"
+                    "• `/spottings leaderboard` — view the spottings leaderboard\n"
+                    "• `/spottings edit` — edit a user's spotting or spotted count _(admin only)_\n"
+                    "• `/spottings recount` — full history recount _(admin only)_"
+                ),
             )
 
     @app.action("spottings_user_select")

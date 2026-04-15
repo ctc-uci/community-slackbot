@@ -1,0 +1,25 @@
+features/matchy.py
+  34d7e0ec7b9f7d31 10,13-15,264,374-376
+manifest.json
+  34d7e0ec7b9f7d31 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "e0f3236fc43c21d2e04d8a1de43bb1ce4c6e5c13",
+  "prompts": {
+    "34d7e0ec7b9f7d31": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "29bc633a-cab4-441f-8e22-ef1e29e892f1",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Brendan Lieu",
+      "messages": [],
+      "total_additions": 9,
+      "total_deletions": 9,
+      "accepted_lines": 9,
+      "overriden_lines": 0
+    }
+  }
+}

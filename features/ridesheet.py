@@ -40,7 +40,7 @@ def get_all_active_ridesheets():
             
             if not channel_id or not ts:
                 try:
-                    channel_id, ts = doc.id.split("-") 
+                    channel_id, ts = doc.id.split("_", 1)
                 except ValueError:
                     print(f"Could not parse channel/ts for doc {doc.id}. Skipping.")
                     continue

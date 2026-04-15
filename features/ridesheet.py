@@ -1,6 +1,6 @@
 import json
-from slack_sdk.errors import SlackApiError
-from firebase_admin import firestore
+from slack_sdk.errors import SlackApiError # type: ignore
+from firebase_admin import firestore # type: ignore
 
 # Import your custom Firebase client (Adjust the import path if necessary)
 from firebase_client import get_firebase_app
@@ -269,7 +269,20 @@ def register_ridesheet_handlers(app):
         
         channel_id, message_ts = val.split("|")
         meta = {"channel_id": channel_id, "message_ts": message_ts}
+        user_id = body["user"]["id"]
+
+        state = get_state(channel_id, message_ts)
+        car = state.get("cars", {}).get(user_id, {}) if state else {}
+        existing_passengers = car.get("passengers", [])
         
+        passenger_element = {
+            "type": "multi_users_select", 
+            "action_id": "passengers_input", 
+            "placeholder": {"type": "plain_text", "text": "Search for people..."}
+        }
+        if existing_passengers:
+            passenger_element["initial_users"] = existing_passengers
+
         client.views_open(
             trigger_id=body["trigger_id"],
             view={
@@ -303,6 +316,13 @@ def register_ridesheet_handlers(app):
                             "action_id": "departure_input"
                         },
                         "label": {"type": "plain_text", "text": "Departure Time"}
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "passengers_block",
+                        "optional": True, 
+                        "element": passenger_element,
+                        "label": {"type": "plain_text", "text": "Manage Passengers"}
                     }
                 ]
             }
@@ -322,8 +342,12 @@ def register_ridesheet_handlers(app):
         cap = int(cap_str)
             
         dep_timestamp = vals["departure_block"]["departure_input"]["selected_date_time"]
-        
         dep = f"<!date^{dep_timestamp}^{{date_short}} at {{time}}|Time: {dep_timestamp}>"
+
+        passengers = vals["passengers_block"]["passengers_input"]["selected_users"]
+        
+        if user_id in passengers:
+            passengers.remove(user_id)
 
         state = get_state(chan, ts)
         if state:
@@ -331,7 +355,7 @@ def register_ridesheet_handlers(app):
             state["cars"][user_id] = {
                 "capacity": cap,
                 "departure": dep,
-                "passengers": []
+                "passengers": passengers
             }
             save_state(chan, ts, state)
             blocks = _build_ridesheet_blocks(state, chan, ts)

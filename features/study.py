@@ -109,10 +109,14 @@ def _meta_context_block(session):
         return None
     return {"type": "context", "elements": elements}
 
+def _italicize(text):
+    """Wrap each line in underscores for italic formatting, skipping blank lines."""
+    return "\n".join(f"_{line}_" if line.strip() else line for line in text.split("\n"))
+
 def _build_full_text(session):
     base = _build_announcement_text(session)
     if session.get("description"):
-        base += f"\n_{session['description']}_"
+        base += f"\n{_italicize(session['description'])}"
     if session.get("image_url"):
         base += "\nPhoto attached"
     return base
@@ -211,7 +215,7 @@ def _extend_session(client, sid, minutes, response_url=None):
         if session.get("description"):
             blocks.append({
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"_{session['description']}_"},
+                "text": {"type": "mrkdwn", "text": _italicize(session['description'])},
             })
         if session.get("image_url"):
             blocks.append({"type": "divider"})
@@ -976,7 +980,7 @@ def register_study_handlers(app):
             session = active_sessions[session_id]
             blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": _build_announcement_text(session)}}]
             if description:
-                blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"_{description}_"}})
+                blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": _italicize(description)}})
             if image_url:
                 blocks.append({"type": "divider"})
                 blocks.append({"type": "image", "image_url": image_url, "alt_text": f"Study spot photo from {user_name}", "block_id": "study_image_block"})
@@ -1042,7 +1046,7 @@ def register_study_handlers(app):
                     {"type": "section", "text": {"type": "mrkdwn", "text": _build_announcement_text(session)}}
                 ]
                 if description:
-                    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"_{description}_"}})
+                    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": _italicize(description)}})
                 if image_url:
                     blocks.append({"type": "divider"})
                     blocks.append({"type": "image", "image_url": image_url, "alt_text": f"Study spot photo from {user_name}", "block_id": "study_image_block"})
@@ -1094,7 +1098,7 @@ def register_study_handlers(app):
         msg_text = _build_announcement_text(active_sessions[session_id])
         blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": msg_text}}]
         if description:
-            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"_{description}_"}})
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": _italicize(description)}})
         if image_url:
             blocks.append({"type": "divider"})
             blocks.append({"type": "image", "image_url": image_url, "alt_text": f"Study spot photo from {user_name}", "block_id": "study_image_block"})
@@ -1346,7 +1350,7 @@ def register_study_handlers(app):
         if session.get("description"):
             blocks.append({
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"_{session['description']}_"},
+                "text": {"type": "mrkdwn", "text": _italicize(session['description'])},
             })
 
         if session.get("image_url"):

@@ -1,14 +1,15 @@
 # ctc-bot ⚡️ Bolt for Python
 
-> Slack bot for UCI campus: share where you're studying and see who else is studying for a set duration.
+> Slack bot for UCI campus: share where you're studying, see who else is studying, and track CTC spottings.
 
 ## Overview
 
 This is a Slack app built with [Bolt for Python](https://docs.slack.dev/tools/bolt-python/) that lets users:
 
 - **Share their study location** — `/study` opens a modal to pick a UCI location (Langson, Science Library, Gateway, etc.) and specific spot. The bot announces it to a channel for that duration.
+- **CTC Spottings** — Tracks who spots whom in the CTC-spottings channel. Runs nightly at 11:59 PM Pacific to count @mentions (with 30-second cooldown per spotter-spotted pair), updates Firebase, and posts the leaderboard at 12 AM. Admins can use `/edit-spotting` and `/edit-spotted` to manually correct counts.
 
-Sessions are stored in memory and expire automatically after the chosen duration.
+Sessions are stored in memory and expire automatically after the chosen duration. Spottings data is stored in Firebase Firestore.
 
 ## Running locally
 
@@ -23,6 +24,9 @@ SLACK_APP_TOKEN=xapp-...
 
 # Optional: channel where study announcements are posted (channel ID, e.g. C01234ABCD). If unset, the bot DMs you to confirm and asks you to set it.
 STUDY_CHANNEL_ID=C01234ABCD
+
+# Optional: CTC-spottings channel ID for the spottings leaderboard. Required for nightly count and leaderboard.
+SPOTTINGS_CHANNEL_ID=C01234ABCD
 ```
 
 To get a channel ID: right-click the channel in Slack → "View channel details" → copy the ID at the bottom.
@@ -46,13 +50,17 @@ pip install -r requirements.txt
 
 ### 3. Register slash commands in Slack
 
-In [Slack API](https://api.slack.com/apps) → your app → **Slash Commands**:
+In [Slack API](https://api.slack.com/apps) → your app → **Slash Commands** (or update your App Manifest):
 
-| Command   | Short Description        |
-|----------|---------------------------|
-| `/study` | Share where you're studying |
+| Command         | Short Description                          |
+|-----------------|--------------------------------------------|
+| `/study`        | Share where you're studying                |
+| `/edit-spotting`| Edit a user's spotting count (admin only)  |
+| `/edit-spotted` | Edit a user's spotted count (admin only)   |
 
 Use **Request URL** only if you're on HTTP (not Socket Mode); with Socket Mode you can leave it blank for these.
+
+For spottings: ensure the bot is **invited to the CTC-spottings channel** so it can read message history. Set `SPOTTINGS_CHANNEL_ID` in `.env` to the channel ID.
 
 ### 4. Start the app
 
@@ -76,6 +84,7 @@ Or use the helper script:
 ## Usage
 
 - **`/study`** — Opens a modal: choose a UCI location, optional specific spot, and duration. Submitting posts an announcement to `STUDY_CHANNEL_ID` (or DMs you if not set) and adds you to the active list until the duration ends.
+- **`/edit-spotting`** and **`/edit-spotted`** — Admin-only commands (president, tech directors, internal VP) to manually edit spotting or spotted counts. Opens a form to select a user and update their count.
 
 ## More examples
 

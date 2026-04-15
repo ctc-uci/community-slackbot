@@ -1,7 +1,5 @@
 {
-  "display_information": {
-    "name": "ctc-bot"
-  },
+  "display_information": {"name": "ctc-bot"},
   "features": {
     "app_home": {
       "home_tab_enabled": false,
@@ -12,19 +10,23 @@
       "display_name": "ctc-bot",
       "always_online": true
     },
+    "slash_commands": [
+      {
+        "command": "/spottings",
+        "description": "Manage spottings (admin only)",
+        "usage_hint": "edit | recount | leaderboard"
+      },
+      {
+        "command": "/matchycount",
+        "description": "Track Matchy participation",
+        "usage_hint": "leaderboard | edit | recount"
+      }
+    ]
   },
-  "oauth_config": {
-    "scopes": {
-      "bot": ["channels:history", "chat:write", "files:read", "im:history", "users:read"]
-    }
-  },
+  "oauth_config": {"scopes": {"bot": ["channels:history", "channels:join", "channels:read", "chat:write", "files:read", "im:history", "users:read"]}},
   "settings": {
-    "event_subscriptions": {
-      "bot_events": ["message.channels", "message.im", "member_joined_channel"]
-    },
-    "interactivity": {
-      "is_enabled": true
-    },
+    "event_subscriptions": {"bot_events": ["message.channels", "message.im", "member_joined_channel"]},
+    "interactivity": {"is_enabled": true},
     "org_deploy_enabled": true,
     "socket_mode_enabled": true,
     "token_rotation_enabled": false

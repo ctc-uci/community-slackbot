@@ -1,0 +1,23 @@
+features/spottings.py
+  34d7e0ec7b9f7d31 542-547
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "5cb7ea15ba1bb40bc5b6c2a68ab419d0e614fa79",
+  "prompts": {
+    "34d7e0ec7b9f7d31": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "29bc633a-cab4-441f-8e22-ef1e29e892f1",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Brendan Lieu",
+      "messages": [],
+      "total_additions": 6,
+      "total_deletions": 1,
+      "accepted_lines": 6,
+      "overriden_lines": 0
+    }
+  }
+}

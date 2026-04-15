@@ -592,6 +592,7 @@ def register_ridesheet_handlers(app):
             return
 
         passengers = car["passengers"]
+        joined = False
         if user_id in passengers:
             passengers.remove(user_id)
         else:
@@ -599,10 +600,18 @@ def register_ridesheet_handlers(app):
                 client.chat_postEphemeral(channel=chan, user=user_id, text="Sorry, this car is full! 🚙 Please join another or add your own.")
                 return
             passengers.append(user_id)
+            joined = True
 
         save_state(chan, ts, state)
         blocks = _build_ridesheet_blocks(state, chan, ts)
         client.chat_update(channel=chan, ts=ts, text="🚗 Ridesheet updated", blocks=blocks)
+
+        gc_id = car.get("group_chat_id")
+        if joined and gc_id:
+            try:
+                client.conversations_invite(channel=gc_id, users=user_id)
+            except SlackApiError:
+                pass
 
     @app.action("ridesheet_join_pool")
     def action_join_pool(ack, body, client):
@@ -671,6 +680,13 @@ def register_ridesheet_handlers(app):
             text=f"🎲 You've been randomly assigned to *<@{chosen_driver}>'s* car! They leave {car.get('departure', 'TBD')}. Shhh, keep it a surprise! 🤫"
         )
 
+        gc_id = car.get("group_chat_id")
+        if gc_id:
+            try:
+                client.conversations_invite(channel=gc_id, users=user_id)
+            except SlackApiError:
+                pass
+
     @app.action("ridesheet_remove_car")
     def action_remove_car(ack, body, client):
         """Removes a car from the ridesheet state."""
@@ -690,6 +706,15 @@ def register_ridesheet_handlers(app):
             blocks = _build_ridesheet_blocks(state, chan, ts)
             client.chat_update(channel=chan, ts=ts, text="🚗 Ridesheet updated", blocks=blocks)
 
+    def _invite_to_gc(client, gc_id, user_ids):
+        """Invite users to an existing conversation, ignoring already-in-channel errors."""
+        for uid in user_ids:
+            try:
+                client.conversations_invite(channel=gc_id, users=uid)
+            except SlackApiError as e:
+                if e.response.get("error") != "already_in_channel":
+                    raise
+
     @app.action("ridesheet_make_group_chat")
     def action_make_group_chat(ack, body, client):
         ack()
@@ -701,27 +726,28 @@ def register_ridesheet_handlers(app):
         if not state or driver_id not in state.get("cars", {}): return
 
         car = state["cars"][driver_id]
-        users_to_invite = [driver_id] + car["passengers"]
-
-        if user_id not in users_to_invite:
-            users_to_invite.append(user_id)
-
-        users_to_invite = list(set(users_to_invite))
+        users_to_invite = list(set([driver_id] + car["passengers"] + [user_id]))
 
         if len(users_to_invite) <= 1:
             client.chat_postEphemeral(channel=chan, user=user_id, text="You need at least one passenger to start a group chat!")
             return
 
+        existing_gc = car.get("group_chat_id")
+
         try:
-            res = client.conversations_open(users=",".join(users_to_invite))
-            mpim_id = res["channel"]["id"]
-            
-            title = state['metadata'].get('title', 'Upcoming Trip')
-            client.chat_postMessage(
-                channel=mpim_id,
-                text=f"🚗 Ridesheet chat for *{title}*."
-            )
-            client.chat_postEphemeral(channel=chan, user=user_id, text="Group chat created successfully!")
+            if existing_gc:
+                _invite_to_gc(client, existing_gc, users_to_invite)
+                client.chat_postEphemeral(channel=chan, user=user_id, text="Group chat already exists — any new members have been added! 💬")
+            else:
+                res = client.conversations_open(users=",".join(users_to_invite))
+                mpim_id = res["channel"]["id"]
+
+                state["cars"][driver_id]["group_chat_id"] = mpim_id
+                save_state(chan, ts, state)
+
+                title = state["metadata"].get("title", "Upcoming Trip")
+                client.chat_postMessage(channel=mpim_id, text=f"🚗 Ridesheet chat for *{title}*.")
+                client.chat_postEphemeral(channel=chan, user=user_id, text="Group chat created successfully! 💬")
         except SlackApiError as e:
             client.chat_postEphemeral(channel=chan, user=user_id, text=f"Could not open group chat: `{e.response['error']}` (Ensure the bot has `mpim:write` or `conversations:write` scopes).")
 

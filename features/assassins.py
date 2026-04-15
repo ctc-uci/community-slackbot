@@ -466,10 +466,12 @@ def _is_last_round():
     return state.get("round_number", 0) >= total_rounds
 
 
-def _next_safe_zone_ts():
+def _next_safe_zone_ts(skip_today: bool = False):
     """Pick a random time today or the next valid weekday between 10am and 5pm (PT).
 
     Safe zones start no later than 5pm so they end by 6pm.
+    skip_today: always schedule for the next weekday (used after a safe zone expires
+                so a second one is never scheduled on the same day).
     Returns an epoch timestamp.
     """
     now = datetime.now(TIMEZONE)
@@ -484,12 +486,13 @@ def _next_safe_zone_ts():
         return TIMEZONE.localize(naive).timestamp()
 
     # Try today first (if we have at least 15 minutes left in the window)
-    window_close = now.replace(hour=SAFE_ZONE_WINDOW_END_HOUR - 1, minute=45, second=0, microsecond=0)
-    if now.weekday() < 5 and now < window_close:
-        candidate = _random_ts_on_date(now.year, now.month, now.day)
-        # Must be at least 5 minutes in the future
-        if candidate > time.time() + 300:
-            return candidate
+    if not skip_today:
+        window_close = now.replace(hour=SAFE_ZONE_WINDOW_END_HOUR - 1, minute=45, second=0, microsecond=0)
+        if now.weekday() < 5 and now < window_close:
+            candidate = _random_ts_on_date(now.year, now.month, now.day)
+            # Must be at least 5 minutes in the future
+            if candidate > time.time() + 300:
+                return candidate
 
     # Otherwise advance to the next weekday
     candidate_date = now.date() + timedelta(days=1)
@@ -500,9 +503,9 @@ def _next_safe_zone_ts():
         candidate_date += timedelta(days=1)
 
 
-def _schedule_safe_zone():
+def _schedule_safe_zone(skip_today: bool = False):
     """Pick a location and schedule the next safe zone, including the 30-min warning."""
-    ts = _next_safe_zone_ts()
+    ts = _next_safe_zone_ts(skip_today=skip_today)
     location = random.choice(SAFE_ZONE_LOCATIONS)
     warning_ts = ts - 1800  # 30 minutes before
     with _state_lock:
@@ -601,7 +604,7 @@ def _expire_safe_zone(client):
         ],
     )
     print(f"[Assassins] Safe zone expired: {location}")
-    _schedule_safe_zone()
+    _schedule_safe_zone(skip_today=True)
 
 
 # ---------------------------------------------------------------------------

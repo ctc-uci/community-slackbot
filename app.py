@@ -11,18 +11,19 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 from features.study import register_study_handlers
 from features.gmail import register_gmail_handlers
 from features.assassins import register_assassins_handlers
+from features.spottings import register_spottings_handlers
 
 app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
 register_study_handlers(app)
 register_gmail_handlers(app)
 register_assassins_handlers(app)
+register_spottings_handlers(app)
 
 
 def _start_oauth_server():
     """Run HTTP server for Gmail OAuth callback (e.g. /gmail/oauth on Railway)."""
     from oauth_server import run_oauth_server
     run_oauth_server()
-
 
 if __name__ == "__main__":
     # Start OAuth HTTP server in background when Gmail callback URL is configured (e.g. Railway)

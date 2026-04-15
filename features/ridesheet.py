@@ -155,10 +155,59 @@ def register_ridesheet_handlers(app):
         title = "Edit Ridesheet" if meta["mode"] == "edit" else "Create Ridesheet"
         submit = "Save" if meta["mode"] == "edit" else "Create"
 
-        # Safely extract initial values or default to empty string to prevent Slack API crash
+        # Safely extract initial values
         init_title = initial_data.get("title") or ""
         init_loc = initial_data.get("location") or ""
-        init_dates = initial_data.get("dates") or ""
+        init_start = initial_data.get("start_date")
+        init_end = initial_data.get("end_date")
+
+        # Build the base blocks
+        blocks = [
+            {
+                "type": "input",
+                "block_id": "title_block",
+                "element": {
+                    "type": "plain_text_input", 
+                    "action_id": "title_input",
+                    "initial_value": init_title
+                },
+                "label": {"type": "plain_text", "text": "Event Title"}
+            },
+            {
+                "type": "input",
+                "block_id": "location_block",
+                "element": {
+                    "type": "plain_text_input", 
+                    "action_id": "location_input",
+                    "initial_value": init_loc
+                },
+                "label": {"type": "plain_text", "text": "Location"}
+            }
+        ]
+
+        # Dynamically build Start Date block
+        start_element = {"type": "datepicker", "action_id": "start_date_input"}
+        if init_start:
+            start_element["initial_date"] = init_start
+
+        blocks.append({
+            "type": "input",
+            "block_id": "start_date_block",
+            "element": start_element,
+            "label": {"type": "plain_text", "text": "Start Date"}
+        })
+
+        # Dynamically build End Date block
+        end_element = {"type": "datepicker", "action_id": "end_date_input"}
+        if init_end:
+            end_element["initial_date"] = init_end
+
+        blocks.append({
+            "type": "input",
+            "block_id": "end_date_block",
+            "element": end_element,
+            "label": {"type": "plain_text", "text": "End Date"}
+        })
 
         return {
             "type": "modal",
@@ -166,39 +215,7 @@ def register_ridesheet_handlers(app):
             "private_metadata": json.dumps(meta),
             "title": {"type": "plain_text", "text": title},
             "submit": {"type": "plain_text", "text": submit},
-            "blocks": [
-                {
-                    "type": "input",
-                    "block_id": "title_block",
-                    "element": {
-                        "type": "plain_text_input", 
-                        "action_id": "title_input",
-                        "initial_value": init_title
-                    },
-                    "label": {"type": "plain_text", "text": "Event Title"}
-                },
-                {
-                    "type": "input",
-                    "block_id": "location_block",
-                    "element": {
-                        "type": "plain_text_input", 
-                        "action_id": "location_input",
-                        "initial_value": init_loc
-                    },
-                    "label": {"type": "plain_text", "text": "Location"}
-                },
-                {
-                    "type": "input",
-                    "block_id": "dates_block",
-                    "element": {
-                        "type": "plain_text_input", 
-                        "action_id": "dates_input",
-                        "placeholder": {"type": "plain_text", "text": "e.g., April 20th - 22nd"},
-                        "initial_value": init_dates
-                    },
-                    "label": {"type": "plain_text", "text": "Dates"}
-                }
-            ]
+            "blocks": blocks
         }
 
     @app.view("ridesheet_meta_modal")
@@ -207,10 +224,15 @@ def register_ridesheet_handlers(app):
         meta = json.loads(view["private_metadata"])
         vals = view["state"]["values"]
 
+        start_date = vals["start_date_block"]["start_date_input"]["selected_date"]
+        end_date = vals["end_date_block"]["end_date_input"]["selected_date"]
+
         new_meta = {
             "title": vals["title_block"]["title_input"]["value"],
             "location": vals["location_block"]["location_input"]["value"],
-            "dates": vals["dates_block"]["dates_input"]["value"]
+            "start_date": start_date,
+            "end_date": end_date,
+            "dates": f"{start_date} to {end_date}" 
         }
 
         channel_id = meta["channel_id"]
@@ -261,19 +283,24 @@ def register_ridesheet_handlers(app):
                         "type": "input",
                         "block_id": "capacity_block",
                         "element": {
-                            "type": "plain_text_input", 
+                            "type": "static_select", 
                             "action_id": "capacity_input", 
-                            "placeholder": {"type": "plain_text", "text": "e.g., 4 (Exclude yourself)"}
+                            "placeholder": {"type": "plain_text", "text": "Select seats available"},
+                            "options": [
+                                {
+                                    "text": {"type": "plain_text", "text": f"{i} seats"}, 
+                                    "value": str(i)
+                                } for i in range(1, 10)
+                            ]
                         },
-                        "label": {"type": "plain_text", "text": "Passenger Capacity"}
+                        "label": {"type": "plain_text", "text": "Passenger Capacity (Excluding you)"}
                     },
                     {
                         "type": "input",
                         "block_id": "departure_block",
                         "element": {
-                            "type": "plain_text_input", 
-                            "action_id": "departure_input", 
-                            "placeholder": {"type": "plain_text", "text": "e.g., Friday 9:00 AM"}
+                            "type": "datetimepicker", 
+                            "action_id": "departure_input"
                         },
                         "label": {"type": "plain_text", "text": "Departure Time"}
                     }
@@ -290,12 +317,13 @@ def register_ridesheet_handlers(app):
         user_id = body["user"]["id"]
 
         vals = view["state"]["values"]
-        try:
-            cap = int(vals["capacity_block"]["capacity_input"]["value"].strip())
-        except ValueError:
-            cap = 4 
+        
+        cap_str = vals["capacity_block"]["capacity_input"]["selected_option"]["value"]
+        cap = int(cap_str)
             
-        dep = vals["departure_block"]["departure_input"]["value"]
+        dep_timestamp = vals["departure_block"]["departure_input"]["selected_date_time"]
+        
+        dep = f"<!date^{dep_timestamp}^{{date_short}} at {{time}}|Time: {dep_timestamp}>"
 
         state = get_state(chan, ts)
         if state:

@@ -1,0 +1,23 @@
+features/ridesheet.py
+  1e0be6c7b162f6f5 43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "2ede8f4f8b27f5a8f3c3c2443fe756078c6ba0a9",
+  "prompts": {
+    "1e0be6c7b162f6f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fd384317-bfdb-4411-a0d6-f6f1a791f83f",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Brendan Lieu",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}

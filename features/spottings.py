@@ -6,11 +6,10 @@ Counting strategy (incremental):
 - On each scheduled run (every 24h): fetches only new messages since that timestamp,
   atomically increments existing Firebase counts, updates the stored timestamp
 - On first run (no stored timestamp): bootstraps from full channel history
-- Admins can force a full recount via /spottings recount at any time
-
 Admin commands:
-- /spottings edit    — manually set a user's spotting or spotted count
-- /spottings recount — full history recount (resets incremental pointer)
+- /spottings edit        — manually set a user's spotting or spotted count
+- /spottings recount     — full history recount (resets incremental pointer)
+- /spottings leaderboard — show the leaderboard (ephemeral)
 
 Cooldown: same (spotter, spotted) pair within 30s counts once.
 Same person tagged twice in one message counts once (set deduplication).
@@ -348,7 +347,6 @@ def _scheduler_loop() -> None:
     """
     Background loop:
     - On startup: silent catch-up (process any messages missed while offline)
-    - Every 24 hours: incremental count + post leaderboard
     """
     token = os.environ.get("SLACK_BOT_TOKEN")
     if not token or not SPOTTINGS_CHANNEL_ID:
@@ -368,14 +366,6 @@ def _scheduler_loop() -> None:
         _run_incremental_count(client)
     except Exception:
         pass
-
-    while True:
-        time.sleep(86400)  # 24 hours
-        try:
-            spotting_lb, spotted_lb = _run_incremental_count(client)
-            _post_leaderboard(client, spotting_lb, spotted_lb)
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -530,11 +520,26 @@ def register_spottings_handlers(app):
                         pass
 
             threading.Thread(target=_do_recount, daemon=True).start()
+        elif text == "leaderboard":
+            def _do_leaderboard():
+                try:
+                    spotting_lb, spotted_lb = _run_incremental_count(client)
+                    blocks = _build_leaderboard_blocks(spotting_lb, spotted_lb)
+                    client.chat_postEphemeral(
+                        channel=body.get("channel_id", ""),
+                        user=user_id,
+                        text="CTC Spottings Leaderboard",
+                        blocks=blocks,
+                    )
+                except Exception as e:
+                    logger.error(f"Leaderboard failed: {e}")
+
+            threading.Thread(target=_do_leaderboard, daemon=True).start()
         else:
             client.chat_postEphemeral(
                 channel=body.get("channel_id", ""),
                 user=user_id,
-                text="Usage: `/spottings edit` or `/spottings recount`",
+                text="Usage: `/spottings edit` | `/spottings recount` | `/spottings leaderboard`",
             )
 
     @app.action("spottings_user_select")

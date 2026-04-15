@@ -14,7 +14,7 @@
       {
         "command": "/spottings",
         "description": "Manage spottings (admin only)",
-        "usage_hint": "edit | recount"
+        "usage_hint": "edit | recount | leaderboard"
       }
     ]
   },

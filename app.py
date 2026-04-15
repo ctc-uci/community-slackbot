@@ -12,12 +12,14 @@ from features.study import register_study_handlers
 from features.gmail import register_gmail_handlers
 from features.assassins import register_assassins_handlers
 from features.spottings import register_spottings_handlers
+from features.matchy import register_matchy_handlers
 
 app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
 register_study_handlers(app)
 register_gmail_handlers(app)
 register_assassins_handlers(app)
 register_spottings_handlers(app)
+register_matchy_handlers(app)
 
 
 def _start_oauth_server():

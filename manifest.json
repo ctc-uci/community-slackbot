@@ -15,6 +15,11 @@
         "command": "/spottings",
         "description": "Manage spottings (admin only)",
         "usage_hint": "edit | recount | leaderboard"
+      },
+      {
+        "command": "/matchy",
+        "description": "Track Matchy participation",
+        "usage_hint": "leaderboard | edit | recount"
       }
     ]
   },

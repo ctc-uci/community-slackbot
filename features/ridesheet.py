@@ -1,4 +1,5 @@
 import json
+import random
 from slack_sdk.errors import SlackApiError # type: ignore
 from firebase_admin import firestore # type: ignore
 import os
@@ -108,7 +109,8 @@ def register_ridesheet_handlers(app):
     def _build_ridesheet_blocks(state, channel_id, message_ts):
         """Builds the Slack blocks for the ridesheet message."""
         meta = state.get("metadata", {})
-        
+        is_random = meta.get("mode") == "random"
+
         blocks = [
             {
                 "type": "header",
@@ -124,6 +126,16 @@ def register_ridesheet_handlers(app):
             {"type": "divider"}
         ]
 
+        if is_random:
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "🎲 *Blind Random Mode* — Passengers are randomly assigned to cars. Click *Join / Leave Pool* to get a random seat. You won't be able to see who else is in your car!"
+                }
+            })
+            blocks.append({"type": "divider"})
+
         cars = state.get("cars", {})
         if not cars:
             blocks.append({
@@ -134,9 +146,7 @@ def register_ridesheet_handlers(app):
         for driver_id, car in cars.items():
             passengers = car.get("passengers", [])
             capacity = car.get("capacity", 4)
-            pass_str = ", ".join(f"<@{p}>" for p in passengers) if passengers else "_None yet_"
-            
-            # Fetch direction and create the warning string if needed
+
             direction = car.get("direction", "both")
             dir_str = ""
             if direction == "there":
@@ -146,13 +156,21 @@ def register_ridesheet_handlers(app):
 
             desc = car.get("description", "").strip()
             desc_str = f"\n📝 *Notes:* {desc}" if desc else ""
-            
-            row_text = (
-                f"🚗 *Driver:* <@{driver_id}>  |  🕰️ *Leaves:* {car.get('departure', 'TBD')}  |  💺 *Capacity:* {len(passengers)}/{capacity}"
-                f"{dir_str}\n"
-                f"🧍 *Passengers:* {pass_str}"
-                f"{desc_str}"
-            )
+
+            if is_random:
+                row_text = (
+                    f"🚗 *Driver:* <@{driver_id}>  |  🕰️ *Leaves:* {car.get('departure', 'TBD')}  |  💺 *Seats:* {len(passengers)}/{capacity} filled"
+                    f"{dir_str}"
+                    f"{desc_str}"
+                )
+            else:
+                pass_str = ", ".join(f"<@{p}>" for p in passengers) if passengers else "_None yet_"
+                row_text = (
+                    f"🚗 *Driver:* <@{driver_id}>  |  🕰️ *Leaves:* {car.get('departure', 'TBD')}  |  💺 *Capacity:* {len(passengers)}/{capacity}"
+                    f"{dir_str}\n"
+                    f"🧍 *Passengers:* {pass_str}"
+                    f"{desc_str}"
+                )
 
             blocks.append({
                 "type": "section",
@@ -160,66 +178,101 @@ def register_ridesheet_handlers(app):
             })
 
             btn_val = f"{channel_id}|{message_ts}|{driver_id}"
-            
-            # Add buttons for this specific car
-            blocks.append({
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "🙋 Join / Leave"},
-                        "action_id": "ridesheet_join_passenger",
-                        "value": btn_val
-                    },
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "💬 Make Group Chat"},
-                        "action_id": "ridesheet_make_group_chat",
-                        "value": btn_val
-                    },
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "🗑️ Remove Car"},
-                        "style": "danger",
-                        "action_id": "ridesheet_remove_car",
-                        "value": btn_val,
-                        "confirm": {
-                            "title": {"type": "plain_text", "text": "Remove your car?"},
-                            "text": {"type": "plain_text", "text": "This will remove your car from the ridesheet entirely."},
-                            "confirm": {"type": "plain_text", "text": "Remove"},
-                            "deny": {"type": "plain_text", "text": "Cancel"}
+
+            if is_random:
+                blocks.append({
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "💬 Make Group Chat"},
+                            "action_id": "ridesheet_make_group_chat",
+                            "value": btn_val
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "🗑️ Remove Car"},
+                            "style": "danger",
+                            "action_id": "ridesheet_remove_car",
+                            "value": btn_val,
+                            "confirm": {
+                                "title": {"type": "plain_text", "text": "Remove your car?"},
+                                "text": {"type": "plain_text", "text": "This will remove your car and all assigned passengers from the ridesheet."},
+                                "confirm": {"type": "plain_text", "text": "Remove"},
+                                "deny": {"type": "plain_text", "text": "Cancel"}
+                            }
                         }
-                    }
-                ]
-            })
+                    ]
+                })
+            else:
+                blocks.append({
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "🙋 Join / Leave"},
+                            "action_id": "ridesheet_join_passenger",
+                            "value": btn_val
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "💬 Make Group Chat"},
+                            "action_id": "ridesheet_make_group_chat",
+                            "value": btn_val
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "🗑️ Remove Car"},
+                            "style": "danger",
+                            "action_id": "ridesheet_remove_car",
+                            "value": btn_val,
+                            "confirm": {
+                                "title": {"type": "plain_text", "text": "Remove your car?"},
+                                "text": {"type": "plain_text", "text": "This will remove your car from the ridesheet entirely."},
+                                "confirm": {"type": "plain_text", "text": "Remove"},
+                                "deny": {"type": "plain_text", "text": "Cancel"}
+                            }
+                        }
+                    ]
+                })
             blocks.append({"type": "divider"})
 
         val_meta = f"{channel_id}|{message_ts}" if message_ts else "new"
-        blocks.append({
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "🚘 Add / Edit Car"},
-                    "action_id": "ridesheet_join_driver",
-                    "value": val_meta,
-                    "style": "primary"
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "✏️ Edit Details"},
-                    "action_id": "ridesheet_edit_meta",
-                    "value": val_meta
-                }
-            ]
-        })
+
+        bottom_elements = [
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "🚘 Add / Edit Car"},
+                "action_id": "ridesheet_join_driver",
+                "value": val_meta,
+                "style": "primary"
+            },
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "✏️ Edit Details"},
+                "action_id": "ridesheet_edit_meta",
+                "value": val_meta
+            }
+        ]
+
+        if is_random:
+            bottom_elements.insert(1, {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "🎲 Join / Leave Pool"},
+                "action_id": "ridesheet_join_pool",
+                "value": val_meta
+            })
+
+        blocks.append({"type": "actions", "elements": bottom_elements})
 
         return blocks
 
     @app.command("/ridesheet")
     def cmd_ridesheet(ack, body, client):
         ack()
-        meta = {"mode": "create", "channel_id": body.get("channel_id")}
+        text = body.get("text", "").strip().lower()
+        ridesheet_mode = "random" if text == "random" else "normal"
+        meta = {"mode": "create", "channel_id": body.get("channel_id"), "ridesheet_mode": ridesheet_mode}
         client.views_open(
             trigger_id=body["trigger_id"],
             view=_build_meta_modal(meta)
@@ -245,9 +298,10 @@ def register_ridesheet_handlers(app):
     def _build_meta_modal(meta, initial_data=None):
         if initial_data is None:
             initial_data = {}
-            
+
         title = "Edit Ridesheet" if meta["mode"] == "edit" else "Create Ridesheet"
         submit = "Save" if meta["mode"] == "edit" else "Create"
+        is_random = meta.get("ridesheet_mode") == "random" or initial_data.get("mode") == "random"
 
         # Safely extract initial values
         init_title = initial_data.get("title") or ""
@@ -256,12 +310,22 @@ def register_ridesheet_handlers(app):
         init_end = initial_data.get("end_date")
 
         # Build the base blocks
-        blocks = [
+        blocks = []
+
+        if is_random:
+            blocks.append({
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": "🎲 *Blind Random Mode* — Passengers will be randomly assigned to cars and won't see who they're riding with."}
+                ]
+            })
+
+        blocks += [
             {
                 "type": "input",
                 "block_id": "title_block",
                 "element": {
-                    "type": "plain_text_input", 
+                    "type": "plain_text_input",
                     "action_id": "title_input",
                     "initial_value": init_title
                 },
@@ -271,7 +335,7 @@ def register_ridesheet_handlers(app):
                 "type": "input",
                 "block_id": "location_block",
                 "element": {
-                    "type": "plain_text_input", 
+                    "type": "plain_text_input",
                     "action_id": "location_input",
                     "initial_value": init_loc
                 },
@@ -326,13 +390,16 @@ def register_ridesheet_handlers(app):
             "location": vals["location_block"]["location_input"]["value"],
             "start_date": start_date,
             "end_date": end_date,
-            "dates": f"{start_date} to {end_date}" 
+            "dates": f"{start_date} to {end_date}"
         }
+
+        if meta.get("ridesheet_mode"):
+            new_meta["mode"] = meta["ridesheet_mode"]
 
         channel_id = meta["channel_id"]
 
         if meta["mode"] == "create":
-            new_meta["pinned"] = True 
+            new_meta["pinned"] = True
             state = {"metadata": new_meta, "cars": {}}
             
             blocks = _build_ridesheet_blocks(state, channel_id, "")
@@ -363,45 +430,95 @@ def register_ridesheet_handlers(app):
         ack()
         val = body["actions"][0]["value"]
         if not val or val == "new": return
-        
+
         channel_id, message_ts = val.split("|")
         meta = {"channel_id": channel_id, "message_ts": message_ts}
         user_id = body["user"]["id"]
 
         state = get_state(channel_id, message_ts)
+        is_random = state and state.get("metadata", {}).get("mode") == "random"
         car = state.get("cars", {}).get(user_id, {}) if state else {}
-        
+
         existing_passengers = car.get("passengers", [])
         existing_desc = car.get("description", "")
-        existing_direction = car.get("direction", "both") # Defaults to "both"
-        
-        passenger_element = {
-            "type": "multi_users_select", 
-            "action_id": "passengers_input", 
-            "placeholder": {"type": "plain_text", "text": "Search for people..."}
-        }
-        if existing_passengers:
-            passenger_element["initial_users"] = existing_passengers
+        existing_direction = car.get("direction", "both")
 
-        # Build description element safely
         desc_element = {
-            "type": "plain_text_input", 
-            "action_id": "description_input", 
+            "type": "plain_text_input",
+            "action_id": "description_input",
             "multiline": True,
             "placeholder": {"type": "plain_text", "text": "e.g., Poop in trunk!"}
         }
         if existing_desc:
             desc_element["initial_value"] = existing_desc
 
-        # Build direction element
         direction_options = [
             {"text": {"type": "plain_text", "text": "🔄 Both Ways (Default)"}, "value": "both"},
             {"text": {"type": "plain_text", "text": "➡️ Driving THERE only"}, "value": "there"},
             {"text": {"type": "plain_text", "text": "⬅️ Returning ONLY"}, "value": "return"}
         ]
-        
-        # Find the matching initial option based on saved state
         initial_dir_option = next((opt for opt in direction_options if opt["value"] == existing_direction), direction_options[0])
+
+        modal_blocks = [
+            {
+                "type": "input",
+                "block_id": "capacity_block",
+                "element": {
+                    "type": "static_select",
+                    "action_id": "capacity_input",
+                    "placeholder": {"type": "plain_text", "text": "Select seats available"},
+                    "options": [
+                        {"text": {"type": "plain_text", "text": f"{i} seats"}, "value": str(i)}
+                        for i in range(1, 10)
+                    ]
+                },
+                "label": {"type": "plain_text", "text": "Passenger Capacity (Excluding you)"}
+            },
+            {
+                "type": "input",
+                "block_id": "departure_block",
+                "element": {
+                    "type": "datetimepicker",
+                    "action_id": "departure_input"
+                },
+                "label": {"type": "plain_text", "text": "Departure Time"}
+            },
+            {
+                "type": "input",
+                "block_id": "direction_block",
+                "element": {
+                    "type": "static_select",
+                    "action_id": "direction_input",
+                    "options": direction_options,
+                    "initial_option": initial_dir_option
+                },
+                "label": {"type": "plain_text", "text": "Ride Direction"}
+            }
+        ]
+
+        if not is_random:
+            passenger_element = {
+                "type": "multi_users_select",
+                "action_id": "passengers_input",
+                "placeholder": {"type": "plain_text", "text": "Search for people..."}
+            }
+            if existing_passengers:
+                passenger_element["initial_users"] = existing_passengers
+            modal_blocks.append({
+                "type": "input",
+                "block_id": "passengers_block",
+                "optional": True,
+                "element": passenger_element,
+                "label": {"type": "plain_text", "text": "Manage Passengers"}
+            })
+
+        modal_blocks.append({
+            "type": "input",
+            "block_id": "description_block",
+            "optional": True,
+            "element": desc_element,
+            "label": {"type": "plain_text", "text": "Notes / Description"}
+        })
 
         client.views_open(
             trigger_id=body["trigger_id"],
@@ -411,58 +528,7 @@ def register_ridesheet_handlers(app):
                 "private_metadata": json.dumps(meta),
                 "title": {"type": "plain_text", "text": "Add or Edit Your Car"},
                 "submit": {"type": "plain_text", "text": "Save Car"},
-                "blocks": [
-                    {
-                        "type": "input",
-                        "block_id": "capacity_block",
-                        "element": {
-                            "type": "static_select", 
-                            "action_id": "capacity_input", 
-                            "placeholder": {"type": "plain_text", "text": "Select seats available"},
-                            "options": [
-                                {
-                                    "text": {"type": "plain_text", "text": f"{i} seats"}, 
-                                    "value": str(i)
-                                } for i in range(1, 10)
-                            ]
-                        },
-                        "label": {"type": "plain_text", "text": "Passenger Capacity (Excluding you)"}
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "departure_block",
-                        "element": {
-                            "type": "datetimepicker", 
-                            "action_id": "departure_input"
-                        },
-                        "label": {"type": "plain_text", "text": "Departure Time"}
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "direction_block",
-                        "element": {
-                            "type": "static_select",
-                            "action_id": "direction_input",
-                            "options": direction_options,
-                            "initial_option": initial_dir_option
-                        },
-                        "label": {"type": "plain_text", "text": "Ride Direction"}
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "passengers_block",
-                        "optional": True,  
-                        "element": passenger_element,
-                        "label": {"type": "plain_text", "text": "Manage Passengers"}
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "description_block",
-                        "optional": True,  
-                        "element": desc_element,
-                        "label": {"type": "plain_text", "text": "Notes / Description"}
-                    }
-                ]
+                "blocks": modal_blocks
             }
         )
 
@@ -475,22 +541,27 @@ def register_ridesheet_handlers(app):
         user_id = body["user"]["id"]
 
         vals = view["state"]["values"]
-        
+
         cap_str = vals["capacity_block"]["capacity_input"]["selected_option"]["value"]
         cap = int(cap_str)
-            
+
         dep_timestamp = vals["departure_block"]["departure_input"]["selected_date_time"]
         dep = f"<!date^{dep_timestamp}^{{date_short}} at {{time}}|Time: {dep_timestamp}>"
 
-        passengers = vals["passengers_block"]["passengers_input"]["selected_users"]
-        if user_id in passengers:
-            passengers.remove(user_id)
-
         desc = vals["description_block"]["description_input"]["value"] or ""
-        
         direction = vals["direction_block"]["direction_input"]["selected_option"]["value"]
 
         state = get_state(chan, ts)
+        is_random = state and state.get("metadata", {}).get("mode") == "random"
+
+        if is_random:
+            # Preserve passengers that were randomly assigned; don't overwrite them
+            passengers = state.get("cars", {}).get(user_id, {}).get("passengers", []) if state else []
+        else:
+            passengers = vals["passengers_block"]["passengers_input"]["selected_users"] or []
+            if user_id in passengers:
+                passengers.remove(user_id)
+
         if state:
             state.setdefault("cars", {})
             state["cars"][user_id] = {
@@ -498,7 +569,7 @@ def register_ridesheet_handlers(app):
                 "departure": dep,
                 "passengers": passengers,
                 "description": desc,
-                "direction": direction 
+                "direction": direction
             }
             save_state(chan, ts, state)
             blocks = _build_ridesheet_blocks(state, chan, ts)
@@ -532,6 +603,73 @@ def register_ridesheet_handlers(app):
         save_state(chan, ts, state)
         blocks = _build_ridesheet_blocks(state, chan, ts)
         client.chat_update(channel=chan, ts=ts, text="🚗 Ridesheet updated", blocks=blocks)
+
+    @app.action("ridesheet_join_pool")
+    def action_join_pool(ack, body, client):
+        """Randomly assigns or removes a user from a car in blind random mode."""
+        ack()
+        val = body["actions"][0]["value"]
+        chan, ts = val.split("|")
+        user_id = body["user"]["id"]
+
+        state = get_state(chan, ts)
+        if not state:
+            return
+
+        if state.get("metadata", {}).get("mode") != "random":
+            client.chat_postEphemeral(channel=chan, user=user_id, text="This ridesheet is not in random mode.")
+            return
+
+        cars = state.get("cars", {})
+        if not cars:
+            client.chat_postEphemeral(channel=chan, user=user_id, text="No cars available yet! Wait for drivers to add their cars. 🚗")
+            return
+
+        # Check if user is already assigned to a car
+        assigned_driver = None
+        for driver_id, car in cars.items():
+            if user_id in car.get("passengers", []):
+                assigned_driver = driver_id
+                break
+
+        if assigned_driver:
+            # Leave the pool
+            state["cars"][assigned_driver]["passengers"].remove(user_id)
+            save_state(chan, ts, state)
+            blocks = _build_ridesheet_blocks(state, chan, ts)
+            client.chat_update(channel=chan, ts=ts, text="🚗 Ridesheet updated", blocks=blocks)
+            client.chat_postEphemeral(channel=chan, user=user_id, text="You've left the ridesheet pool. Click *Join / Leave Pool* again if you change your mind!")
+            return
+
+        # Drivers can't also join the passenger pool
+        if user_id in cars:
+            client.chat_postEphemeral(channel=chan, user=user_id, text="You're already a driver on this ridesheet! You can't also join the passenger pool. 🚘")
+            return
+
+        # Find cars with available capacity
+        available_cars = [
+            driver_id for driver_id, car in cars.items()
+            if len(car.get("passengers", [])) < car.get("capacity", 4)
+        ]
+
+        if not available_cars:
+            client.chat_postEphemeral(channel=chan, user=user_id, text="Sorry, all cars are full! Ask someone to add more cars. 🚗")
+            return
+
+        # Randomly assign to a car
+        chosen_driver = random.choice(available_cars)
+        state["cars"][chosen_driver]["passengers"].append(user_id)
+        save_state(chan, ts, state)
+
+        blocks = _build_ridesheet_blocks(state, chan, ts)
+        client.chat_update(channel=chan, ts=ts, text="🚗 Ridesheet updated", blocks=blocks)
+
+        car = state["cars"][chosen_driver]
+        client.chat_postEphemeral(
+            channel=chan,
+            user=user_id,
+            text=f"🎲 You've been randomly assigned to *<@{chosen_driver}>'s* car! They leave {car.get('departure', 'TBD')}. Shhh, keep it a surprise! 🤫"
+        )
 
     @app.action("ridesheet_remove_car")
     def action_remove_car(ack, body, client):

@@ -1,13 +1,94 @@
 import json
 from slack_sdk.errors import SlackApiError # type: ignore
 from firebase_admin import firestore # type: ignore
-
+import os
+import time
+from datetime import datetime
+from slack_sdk import WebClient # type: ignore
+import threading
 # Import your custom Firebase client (Adjust the import path if necessary)
 from firebase_client import get_firebase_app
 
 # Initialize Firebase using your custom client wrapper
 firebase_app = get_firebase_app()
 db = firestore.client(app=firebase_app)
+
+
+from firebase_admin import firestore
+
+def get_all_active_ridesheets():
+    """
+    Fetches all ridesheets from Firestore that are currently pinned.
+    Returns a dictionary formatted as: {"channel_id|message_ts": state_dict}
+    """
+    active_ridesheets = {}
+    
+    collection_name = "ridesheets" 
+    
+    try:
+        docs = db.collection(collection_name).stream()
+        
+        for doc in docs:
+            state = doc.to_dict()
+            meta = state.get("metadata", {})
+            
+            if not meta.get("pinned", False):
+                continue
+
+            channel_id = meta.get("channel_id")
+            ts = meta.get("message_ts")
+            
+            if not channel_id or not ts:
+                try:
+                    channel_id, ts = doc.id.split("-") 
+                except ValueError:
+                    print(f"Could not parse channel/ts for doc {doc.id}. Skipping.")
+                    continue
+            
+            key = f"{channel_id}|{ts}"
+            active_ridesheets[key] = state
+            
+    except Exception as e:
+        print(f"Error fetching ridesheets from Firestore: {e}")
+        
+    return active_ridesheets
+
+def _ridesheet_cleanup_loop():
+    """Background loop: periodically unpin expired ridesheets."""
+    token = os.environ.get("SLACK_BOT_TOKEN")
+    if not token:
+        return
+    client = WebClient(token=token)
+    
+    while True:
+        try:
+            _clean_expired_ridesheets(client)
+        except Exception as e:
+            print(f"Ridesheet cleanup error: {e}")
+            
+        time.sleep(3600) 
+
+def _clean_expired_ridesheets(client):
+    """Unpins ridesheets where the end_date has passed."""
+    active_ridesheets = get_all_active_ridesheets() 
+    
+    today_str = datetime.now().strftime("%Y-%m-%d")
+
+    for key, state in active_ridesheets.items():
+        meta = state.get("metadata", {})
+        end_date = meta.get("end_date")
+        is_pinned = meta.get("pinned", False)
+
+        if end_date and is_pinned and end_date < today_str:
+            chan, ts = key.split("|")
+            
+            try:
+                client.pins_remove(channel=chan, timestamp=ts)
+            except Exception:
+                pass 
+            
+            state["metadata"]["pinned"] = False
+            save_state(chan, ts, state)
 
 def get_state(channel_id, message_ts):
     """Fetches ridesheet state from Firestore."""
@@ -251,19 +332,22 @@ def register_ridesheet_handlers(app):
         channel_id = meta["channel_id"]
 
         if meta["mode"] == "create":
+            new_meta["pinned"] = True 
             state = {"metadata": new_meta, "cars": {}}
             
-            # Post loading message to get TS
             blocks = _build_ridesheet_blocks(state, channel_id, "")
             res = client.chat_postMessage(channel=channel_id, text="🚗 Generating Ridesheet...", blocks=blocks)
             ts = res["ts"]
             
-            # Save to Firestore
             save_state(channel_id, ts, state)
 
-            # Update with correct TS for interactive buttons
             blocks = _build_ridesheet_blocks(state, channel_id, ts)
             client.chat_update(channel=channel_id, ts=ts, text=f"🚗 Ridesheet: {new_meta['title']}", blocks=blocks)
+
+            try:
+                client.pins_add(channel=channel_id, timestamp=ts)
+            except Exception as e:
+                print(f"Failed to pin ridesheet: {e}")
 
         elif meta["mode"] == "edit":
             ts = meta["message_ts"]
@@ -502,3 +586,5 @@ def register_ridesheet_handlers(app):
             client.chat_postEphemeral(channel=chan, user=user_id, text="Group chat created successfully!")
         except SlackApiError as e:
             client.chat_postEphemeral(channel=chan, user=user_id, text=f"Could not open group chat: `{e.response['error']}` (Ensure the bot has `mpim:write` or `conversations:write` scopes).")
+
+    threading.Thread(target=_ridesheet_cleanup_loop, daemon=True).start()

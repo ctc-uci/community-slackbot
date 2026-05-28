@@ -14,6 +14,7 @@ from features.assassins import register_assassins_handlers
 from features.ridesheet import register_ridesheet_handlers
 from features.spottings import register_spottings_handlers
 from features.matchy import register_matchy_handlers
+from features.events import register_events_handlers
 
 app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
 register_study_handlers(app)
@@ -22,6 +23,7 @@ register_assassins_handlers(app)
 register_ridesheet_handlers(app)
 register_spottings_handlers(app)
 register_matchy_handlers(app)
+register_events_handlers(app)
 
 @app.event("message")
 def handle_message_events(body, logger):

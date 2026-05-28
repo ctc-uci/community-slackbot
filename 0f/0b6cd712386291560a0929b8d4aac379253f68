@@ -1,0 +1,34 @@
+features/events.py
+  s_6ba209c884776d::t_642f485c30f446 1-767
+app.py
+  s_6ba209c884776d::t_69e7317dc7b8b2 17,26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0f0b6cd712386291560a0929b8d4aac379253f68",
+  "prompts": {
+    "ff60caf5dd1a43b3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c6fce98a-c1c2-43bb-9cc6-21f849dab701",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Brendan Lieu <brendanlieu05@gmail.com>",
+      "total_additions": 991,
+      "total_deletions": 298,
+      "accepted_lines": 90,
+      "overriden_lines": 118
+    }
+  },
+  "sessions": {
+    "s_6ba209c884776d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7fad6e2-adff-4b51-b8a4-ed0e4a0c2b5e",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Brendan Lieu <brendanlieu05@gmail.com>"
+    }
+  }
+}

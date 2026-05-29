@@ -14,5 +14,6 @@ slack_cli_hooks==0.2.0
 slack_sdk==3.39.0
 urllib3==2.6.3
 watchdog==6.0.0
+flask>=3.0.0
 pytest>=8.0.0
 pytest-mock>=3.0.0

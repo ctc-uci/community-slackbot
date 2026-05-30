@@ -1,0 +1,44 @@
+oauth_server.py
+  s_f2c1ae5962dd1f::t_f6a7b273716a1c 772-774,782-785
+  s_f2c1ae5962dd1f::t_ea457c9b2f5056 646,648-649
+  s_8535032328b05d::t_8c6d58e7233751 632
+  s_f2c1ae5962dd1f::t_5d59e9adcdb2e8 483
+  s_f2c1ae5962dd1f::t_9a32bc93ee496c 942-944
+  s_8535032328b05d::t_ee289251afbf3f 867-880
+features/ridesheet.py
+  s_f2c1ae5962dd1f::t_abf1109eb53bb8 171,183
+  s_f2c1ae5962dd1f::t_e6d98eb72b5094 248-249
+  s_f2c1ae5962dd1f::t_7d3d2d1711ad45 306-329
+  s_f2c1ae5962dd1f::t_e71987e09c439a 24-33
+  s_f2c1ae5962dd1f::t_34dd806abaf984 358-359,366-368
+  s_f2c1ae5962dd1f::t_c7890cac4af671 210
+  s_8535032328b05d::t_f4aaca36972c35 172-175,192-197
+  s_8535032328b05d::t_0446e88c978709 17-23
+  s_8535032328b05d::t_b5ebe0801ef9e9 186-191,198-199
+  s_f2c1ae5962dd1f::t_495b732ec07ecf 141
+  s_f2c1ae5962dd1f::t_1bfa4507e83c78 184
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a6686998dc042435c2539d0af520c170d7f54f58",
+  "prompts": {},
+  "sessions": {
+    "s_8535032328b05d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fb155229-c99f-464a-b18a-ff730991ff06",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Brendan Lieu <brendanlieu05@gmail.com>"
+    },
+    "s_f2c1ae5962dd1f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "db82495b-17ec-4110-a1d6-a5cda626c0dd",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Brendan Lieu <brendanlieu05@gmail.com>"
+    }
+  }
+}

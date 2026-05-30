@@ -8,7 +8,7 @@ import pytz
 from firebase_admin import firestore
 from firebase_client import get_firebase_app
 
-EVENTS_CHANNEL_ID = os.environ.get("TEST_CHANNEL_ID", "C0ABVSK5QH0")
+EVENTS_CHANNEL_ID = "C0B6S30FZ39"
 TIMEZONE = pytz.timezone(os.environ.get("TZ", "America/Los_Angeles"))
 
 

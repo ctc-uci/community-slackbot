@@ -149,7 +149,7 @@ def _build_ridesheet_blocks(state, channel_id, message_ts):
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": "🎲 *Blind Random Mode* — Passengers are randomly assigned to cars. Join from the website to get a random seat. You won't be able to see who else is in your car!"
+                "text": "🎲 *Blind Random Mode* — Passengers are randomly assigned to cars. Join from the website to get a random seat."
             }
         })
         blocks.append({"type": "divider"})
@@ -233,108 +233,145 @@ def refresh_ridesheet_message(channel_id, message_ts):
     except Exception as e:
         print(f"Failed to refresh ridesheet Slack message: {e}")
 
-def register_ridesheet_handlers(app):
+def create_ridesheet_for_event(client, channel_id, thread_ts, title, location, date_str, start_time_str, end_time_str, mode="normal"):
+    """Post a ridesheet as a thread reply to an event message."""
+    meta = {
+        "title": title,
+        "location": location or "TBD",
+        "start_date": date_str,
+        "end_date": date_str,
+        "dates": f"{date_str} to {date_str}",
+        "start_time": start_time_str,
+        "end_time": end_time_str,
+        "mode": mode,
+        "channel_id": channel_id,
+        "pinned": False,
+    }
+    state = {"metadata": meta, "cars": {}}
 
-    def _build_meta_modal(meta, initial_data=None):
-        if initial_data is None:
-            initial_data = {}
+    res = client.chat_postMessage(
+        channel=channel_id,
+        thread_ts=thread_ts,
+        text=f"🚗 Ridesheet: {title}",
+        blocks=_build_ridesheet_blocks(state, channel_id, ""),
+    )
+    ts = res["ts"]
+    save_state(channel_id, ts, state)
 
-        is_random = meta.get("ridesheet_mode") == "random"
+    # Re-render with final ts so the web join URL resolves correctly
+    client.chat_update(
+        channel=channel_id,
+        ts=ts,
+        text=f"🚗 Ridesheet: {title}",
+        blocks=_build_ridesheet_blocks(state, channel_id, ts),
+    )
+    return ts
 
-        init_title = initial_data.get("title") or ""
-        init_loc = initial_data.get("location") or ""
-        init_start = initial_data.get("start_date")
-        init_end = initial_data.get("end_date")
-        init_start_time = initial_data.get("start_time")
-        init_end_time = initial_data.get("end_time")
 
-        blocks = []
+def _build_ridesheet_meta_modal(meta, initial_data=None):
+    """Build the Create Ridesheet modal. Exported so other features can open it."""
+    if initial_data is None:
+        initial_data = {}
 
-        if is_random:
-            blocks.append({
-                "type": "context",
-                "elements": [
-                    {"type": "mrkdwn", "text": "🎲 *Blind Random Mode* — Passengers will be randomly assigned to cars and won't see who they're riding with."}
-                ]
-            })
+    is_random = meta.get("ridesheet_mode") == "random"
 
-        blocks += [
-            {
-                "type": "input",
-                "block_id": "title_block",
-                "element": {
-                    "type": "plain_text_input",
-                    "action_id": "title_input",
-                    "initial_value": init_title
-                },
-                "label": {"type": "plain_text", "text": "Event Title"}
+    init_title = initial_data.get("title") or ""
+    init_loc = initial_data.get("location") or ""
+    init_start = initial_data.get("start_date")
+    init_end = initial_data.get("end_date")
+    init_start_time = initial_data.get("start_time")
+    init_end_time = initial_data.get("end_time")
+
+    blocks = []
+
+    if is_random:
+        blocks.append({
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": "🎲 *Blind Random Mode* — Passengers will be randomly assigned to cars."}
+            ]
+        })
+
+    blocks += [
+        {
+            "type": "input",
+            "block_id": "title_block",
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "title_input",
+                "initial_value": init_title
             },
-            {
-                "type": "input",
-                "block_id": "location_block",
-                "element": {
-                    "type": "plain_text_input",
-                    "action_id": "location_input",
-                    "initial_value": init_loc
-                },
-                "label": {"type": "plain_text", "text": "Location"}
-            }
-        ]
-
-        start_element = {"type": "datepicker", "action_id": "start_date_input"}
-        if init_start:
-            start_element["initial_date"] = init_start
-
-        blocks.append({
+            "label": {"type": "plain_text", "text": "Event Title"}
+        },
+        {
             "type": "input",
-            "block_id": "start_date_block",
-            "element": start_element,
-            "label": {"type": "plain_text", "text": "Start Date"}
-        })
-
-        end_element = {"type": "datepicker", "action_id": "end_date_input"}
-        if init_end:
-            end_element["initial_date"] = init_end
-
-        blocks.append({
-            "type": "input",
-            "block_id": "end_date_block",
-            "element": end_element,
-            "label": {"type": "plain_text", "text": "End Date"}
-        })
-
-        start_time_element = {"type": "timepicker", "action_id": "start_time_input"}
-        if init_start_time:
-            start_time_element["initial_time"] = init_start_time
-
-        blocks.append({
-            "type": "input",
-            "block_id": "start_time_block",
-            "element": start_time_element,
-            "label": {"type": "plain_text", "text": "Start Time"},
-            "optional": True
-        })
-
-        end_time_element = {"type": "timepicker", "action_id": "end_time_input"}
-        if init_end_time:
-            end_time_element["initial_time"] = init_end_time
-
-        blocks.append({
-            "type": "input",
-            "block_id": "end_time_block",
-            "element": end_time_element,
-            "label": {"type": "plain_text", "text": "End Time"},
-            "optional": True
-        })
-
-        return {
-            "type": "modal",
-            "callback_id": "ridesheet_meta_modal",
-            "private_metadata": json.dumps(meta),
-            "title": {"type": "plain_text", "text": "Create Ridesheet"},
-            "submit": {"type": "plain_text", "text": "Create"},
-            "blocks": blocks
+            "block_id": "location_block",
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "location_input",
+                "initial_value": init_loc
+            },
+            "label": {"type": "plain_text", "text": "Location"}
         }
+    ]
+
+    start_element = {"type": "datepicker", "action_id": "start_date_input"}
+    if init_start:
+        start_element["initial_date"] = init_start
+
+    blocks.append({
+        "type": "input",
+        "block_id": "start_date_block",
+        "element": start_element,
+        "label": {"type": "plain_text", "text": "Start Date"}
+    })
+
+    end_element = {"type": "datepicker", "action_id": "end_date_input"}
+    if init_end:
+        end_element["initial_date"] = init_end
+
+    blocks.append({
+        "type": "input",
+        "block_id": "end_date_block",
+        "element": end_element,
+        "label": {"type": "plain_text", "text": "End Date"}
+    })
+
+    start_time_element = {"type": "timepicker", "action_id": "start_time_input"}
+    if init_start_time:
+        start_time_element["initial_time"] = init_start_time
+
+    blocks.append({
+        "type": "input",
+        "block_id": "start_time_block",
+        "element": start_time_element,
+        "label": {"type": "plain_text", "text": "Start Time"},
+        "optional": True
+    })
+
+    end_time_element = {"type": "timepicker", "action_id": "end_time_input"}
+    if init_end_time:
+        end_time_element["initial_time"] = init_end_time
+
+    blocks.append({
+        "type": "input",
+        "block_id": "end_time_block",
+        "element": end_time_element,
+        "label": {"type": "plain_text", "text": "End Time"},
+        "optional": True
+    })
+
+    return {
+        "type": "modal",
+        "callback_id": "ridesheet_meta_modal",
+        "private_metadata": json.dumps(meta),
+        "title": {"type": "plain_text", "text": "Create Ridesheet"},
+        "submit": {"type": "plain_text", "text": "Create"},
+        "blocks": blocks
+    }
+
+
+def register_ridesheet_handlers(app):
 
     @app.command("/ridesheet")
     def cmd_ridesheet(ack, body, client):
@@ -344,7 +381,7 @@ def register_ridesheet_handlers(app):
         meta = {"mode": "create", "channel_id": body.get("channel_id"), "ridesheet_mode": ridesheet_mode}
         client.views_open(
             trigger_id=body["trigger_id"],
-            view=_build_meta_modal(meta)
+            view=_build_ridesheet_meta_modal(meta)
         )
 
     @app.view("ridesheet_meta_modal")
@@ -372,11 +409,15 @@ def register_ridesheet_handlers(app):
             new_meta["mode"] = meta["ridesheet_mode"]
 
         channel_id = meta["channel_id"]
+        thread_ts = meta.get("thread_ts")
         new_meta["pinned"] = True
         state = {"metadata": new_meta, "cars": {}}
 
-        blocks = _build_ridesheet_blocks(state, channel_id, "")
-        res = client.chat_postMessage(channel=channel_id, text="🚗 Generating Ridesheet...", blocks=blocks)
+        post_kwargs = {"channel": channel_id, "text": "🚗 Generating Ridesheet...", "blocks": _build_ridesheet_blocks(state, channel_id, "")}
+        if thread_ts:
+            post_kwargs["thread_ts"] = thread_ts
+
+        res = client.chat_postMessage(**post_kwargs)
         ts = res["ts"]
 
         save_state(channel_id, ts, state)
@@ -384,10 +425,11 @@ def register_ridesheet_handlers(app):
         blocks = _build_ridesheet_blocks(state, channel_id, ts)
         client.chat_update(channel=channel_id, ts=ts, text=f"🚗 Ridesheet: {new_meta['title']}", blocks=blocks)
 
-        try:
-            client.pins_add(channel=channel_id, timestamp=ts)
-        except Exception as e:
-            print(f"Failed to pin ridesheet: {e}")
+        if not thread_ts:
+            try:
+                client.pins_add(channel=channel_id, timestamp=ts)
+            except Exception as e:
+                print(f"Failed to pin ridesheet: {e}")
 
     @app.action("ridesheet_open_web")
     def action_open_web(ack, body, client):

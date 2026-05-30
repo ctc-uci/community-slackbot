@@ -1,8 +1,8 @@
-"""Events bot: create, RSVP, edit, and cancel club events."""
+"""Events: create, RSVP, edit, and cancel club events. Supports per-event ridesheets in-thread."""
 import json
 import os
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import pytz
 from firebase_admin import firestore
@@ -10,12 +10,6 @@ from firebase_client import get_firebase_app
 
 EVENTS_CHANNEL_ID = os.environ.get("TEST_CHANNEL_ID", "C0ABVSK5QH0")
 TIMEZONE = pytz.timezone(os.environ.get("TZ", "America/Los_Angeles"))
-
-RSVP_LABELS = {
-    "going": "✅ Going",
-    "maybe": "🤔 Maybe",
-    "not_going": "❌ Can't make it",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -41,42 +35,68 @@ def _delete_event(event_id):
 
 
 def _get_upcoming_events():
-    """Return list of (event_id, event) sorted by date/start_ts, excluding past events."""
+    """Return list of (event_id, event) for events that haven't ended yet, sorted soonest first."""
     now_ts = datetime.now(TIMEZONE).timestamp()
-    docs = _db().collection("events").stream()
     results = []
-    for doc in docs:
+    for doc in _db().collection("events").stream():
         data = doc.to_dict()
-        if data.get("start_ts", 0) >= now_ts or data.get("end_ts", 0) >= now_ts:
+        end = data.get("end_ts") or data.get("start_ts", 0)
+        if end >= now_ts:
             results.append((doc.id, data))
     results.sort(key=lambda x: x[1].get("start_ts", 0))
     return results
 
 
 def _get_user_upcoming_events(user_id):
-    """Return list of (event_id, event) for events created by user_id, soonest first."""
-    all_upcoming = _get_upcoming_events()
-    return [(eid, e) for eid, e in all_upcoming if e.get("creator_id") == user_id]
+    return [(eid, e) for eid, e in _get_upcoming_events() if e.get("creator_id") == user_id]
 
 
 # ---------------------------------------------------------------------------
-# Message building
+# Formatting helpers
 # ---------------------------------------------------------------------------
 
-def _format_event_datetime(event):
-    """Return a human-readable date/time string for the event."""
+def _fmt_ts(ts):
+    """Format a unix timestamp to human-readable local time like '7:30 PM'."""
+    return datetime.fromtimestamp(ts, tz=TIMEZONE).strftime("%-I:%M %p")
+
+
+def _fmt_date(date_str):
+    """Format YYYY-MM-DD to 'Monday, June 1'."""
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d").strftime("%A, %B %-d")
+    except (ValueError, TypeError):
+        return date_str or "TBD"
+
+
+def _event_datetime_str(event):
+    date_str = _fmt_date(event.get("date", ""))
     start_ts = event.get("start_ts")
     end_ts = event.get("end_ts")
-    if not start_ts:
-        return event.get("date", "TBD")
-    start_dt = datetime.fromtimestamp(start_ts, tz=TIMEZONE)
-    date_str = start_dt.strftime("%A, %B %-d")
-    start_time = start_dt.strftime("%-I:%M %p")
-    if end_ts:
-        end_dt = datetime.fromtimestamp(end_ts, tz=TIMEZONE)
-        end_time = end_dt.strftime("%-I:%M %p")
-        return f"{date_str}  ·  {start_time} – {end_time}"
-    return f"{date_str}  ·  {start_time}"
+    if start_ts and end_ts:
+        return f"{date_str}  ·  {_fmt_ts(start_ts)} – {_fmt_ts(end_ts)}"
+    if start_ts:
+        return f"{date_str}  ·  {_fmt_ts(start_ts)}"
+    return date_str
+
+
+def _announcement_fallback_text(event):
+    return f"📣 *{event.get('title', 'Event')}* — {_event_datetime_str(event)}"
+
+
+# ---------------------------------------------------------------------------
+# Announcement blocks
+# ---------------------------------------------------------------------------
+
+def _build_going_text(going, capacity=None):
+    lines = []
+    if capacity:
+        lines.append(f"{len(going)}/{capacity} spots")
+    if not going:
+        lines.append("_No one is going yet — be the first!_")
+    else:
+        mentions = "  ·  ".join(f"<@{uid}>" for uid in going)
+        lines.append(f"Going: {mentions}")
+    return "\n".join(lines)
 
 
 def _build_announcement_blocks(event_id, event):
@@ -88,69 +108,38 @@ def _build_announcement_blocks(event_id, event):
     rsvps = event.get("rsvps", {})
 
     going = [uid for uid, s in rsvps.items() if s == "going"]
-    maybe = [uid for uid, s in rsvps.items() if s == "maybe"]
 
-    datetime_str = _format_event_datetime(event)
-    header_text = f"*{title}*\n📅 {datetime_str}"
+    meta_parts = [f"📅 {_event_datetime_str(event)}"]
     if location:
-        header_text += f"\n📍 {location}"
-
-    rsvp_summary = f"*{len(going)} going*"
-    if maybe:
-        rsvp_summary += f"  ·  {len(maybe)} maybe"
-    if capacity:
-        rsvp_summary += f"  ·  {len(going)}/{capacity} spots"
+        meta_parts.append(f"📍 {location}")
 
     blocks = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": header_text}},
+        {"type": "header", "text": {"type": "plain_text", "text": title, "emoji": True}},
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": "  ·  ".join(meta_parts)}]},
     ]
 
     if description:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"_{description}_"}})
 
     if image_url:
-        blocks.append({"type": "divider"})
         blocks.append({
             "type": "image",
             "image_url": image_url,
-            "alt_text": f"Event photo for {title}",
+            "alt_text": title,
             "block_id": "event_image_block",
         })
 
-    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": rsvp_summary}]})
-
+    blocks.append({"type": "divider"})
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": _build_going_text(going, capacity)}]})
     blocks.append({
         "type": "actions",
         "block_id": "event_rsvp_actions",
         "elements": [
-            {
-                "type": "button",
-                "text": {"type": "plain_text", "text": "✅ Going"},
-                "action_id": "event_rsvp_going",
-                "value": event_id,
-                "style": "primary",
-            },
-            {
-                "type": "button",
-                "text": {"type": "plain_text", "text": "🤔 Maybe"},
-                "action_id": "event_rsvp_maybe",
-                "value": event_id,
-            },
-            {
-                "type": "button",
-                "text": {"type": "plain_text", "text": "❌ Can't make it"},
-                "action_id": "event_rsvp_not_going",
-                "value": event_id,
-            },
+            {"type": "button", "text": {"type": "plain_text", "text": "✅ Going"}, "action_id": "event_rsvp_going", "value": event_id, "style": "primary"},
         ],
     })
 
     return blocks
-
-
-def _build_announcement_text(event):
-    title = event.get("title", "Untitled Event")
-    return f"📣 *{title}* — {_format_event_datetime(event)}"
 
 
 # ---------------------------------------------------------------------------
@@ -158,18 +147,20 @@ def _build_announcement_text(event):
 # ---------------------------------------------------------------------------
 
 def _build_event_modal_blocks(event_data=None):
-    hour_options = [{"text": {"type": "plain_text", "text": str(h)}, "value": str(h)} for h in range(1, 13)]
-    minute_options = [{"text": {"type": "plain_text", "text": f"{m:02d}"}, "value": str(m)} for m in range(0, 60, 5)]
-    ampm_options = [{"text": {"type": "plain_text", "text": t}, "value": t} for t in ["AM", "PM"]]
-
     now = datetime.now(TIMEZONE)
+
     title_value = ""
     date_value = now.strftime("%Y-%m-%d")
     location_value = ""
     description_value = ""
     capacity_value = None
 
-    # Start time defaults: next whole hour
+    hour_options = [{"text": {"type": "plain_text", "text": str(h)}, "value": str(h)} for h in range(1, 13)]
+    minute_options = [{"text": {"type": "plain_text", "text": f"{m:02d}"}, "value": str(m)} for m in range(60)]
+    ampm_options = [{"text": {"type": "plain_text", "text": t}, "value": t} for t in ["AM", "PM"]]
+
+    # Default start = next whole hour, end = start + 2h
+    from datetime import timedelta
     start_dt = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
     end_dt = start_dt + timedelta(hours=2)
 
@@ -178,9 +169,10 @@ def _build_event_modal_blocks(event_data=None):
         location_value = event_data.get("location", "")
         description_value = event_data.get("description", "")
         capacity_value = event_data.get("capacity")
+        if event_data.get("date"):
+            date_value = event_data["date"]
         if event_data.get("start_ts"):
             start_dt = datetime.fromtimestamp(event_data["start_ts"], tz=TIMEZONE)
-            date_value = start_dt.strftime("%Y-%m-%d")
         if event_data.get("end_ts"):
             end_dt = datetime.fromtimestamp(event_data["end_ts"], tz=TIMEZONE)
 
@@ -192,18 +184,14 @@ def _build_event_modal_blocks(event_data=None):
     sh, sm, sa = _to_12h(start_dt)
     eh, em, ea = _to_12h(end_dt)
 
-    # Snap minutes to nearest 5 for the dropdown
-    sm = (sm // 5) * 5
-    em = (em // 5) * 5
+    start_h_opt  = {"text": {"type": "plain_text", "text": str(sh)},   "value": str(sh)}
+    start_m_opt  = {"text": {"type": "plain_text", "text": f"{sm:02d}"}, "value": str(sm)}
+    start_a_opt  = {"text": {"type": "plain_text", "text": sa},          "value": sa}
+    end_h_opt    = {"text": {"type": "plain_text", "text": str(eh)},   "value": str(eh)}
+    end_m_opt    = {"text": {"type": "plain_text", "text": f"{em:02d}"}, "value": str(em)}
+    end_a_opt    = {"text": {"type": "plain_text", "text": ea},          "value": ea}
 
-    start_h_opt = {"text": {"type": "plain_text", "text": str(sh)}, "value": str(sh)}
-    start_m_opt = {"text": {"type": "plain_text", "text": f"{sm:02d}"}, "value": str(sm)}
-    start_a_opt = {"text": {"type": "plain_text", "text": sa}, "value": sa}
-    end_h_opt = {"text": {"type": "plain_text", "text": str(eh)}, "value": str(eh)}
-    end_m_opt = {"text": {"type": "plain_text", "text": f"{em:02d}"}, "value": str(em)}
-    end_a_opt = {"text": {"type": "plain_text", "text": ea}, "value": ea}
-
-    blocks = [
+    return [
         {
             "type": "input",
             "block_id": "event_title_block",
@@ -226,30 +214,29 @@ def _build_event_modal_blocks(event_data=None):
             },
             "label": {"type": "plain_text", "text": "Date"},
         },
-        {"type": "header", "block_id": "event_start_header", "text": {"type": "plain_text", "text": "Start time", "emoji": True}},
+        {"type": "header", "block_id": "event_start_time_header", "text": {"type": "plain_text", "text": "Start time", "emoji": True}},
         {
             "type": "actions",
             "block_id": "event_start_time_actions",
             "elements": [
-                {"type": "static_select", "action_id": "event_start_hour", "options": hour_options, "initial_option": start_h_opt},
+                {"type": "static_select", "action_id": "event_start_hour",   "options": hour_options,   "initial_option": start_h_opt},
                 {"type": "static_select", "action_id": "event_start_minute", "options": minute_options, "initial_option": start_m_opt},
-                {"type": "static_select", "action_id": "event_start_ampm", "options": ampm_options, "initial_option": start_a_opt},
+                {"type": "static_select", "action_id": "event_start_ampm",   "options": ampm_options,   "initial_option": start_a_opt},
             ],
         },
-        {"type": "header", "block_id": "event_end_header", "text": {"type": "plain_text", "text": "End time (optional)", "emoji": True}},
+        {"type": "header", "block_id": "event_end_time_header", "text": {"type": "plain_text", "text": "End time", "emoji": True}},
         {
             "type": "actions",
             "block_id": "event_end_time_actions",
             "elements": [
-                {"type": "static_select", "action_id": "event_end_hour", "options": hour_options, "initial_option": end_h_opt},
+                {"type": "static_select", "action_id": "event_end_hour",   "options": hour_options,   "initial_option": end_h_opt},
                 {"type": "static_select", "action_id": "event_end_minute", "options": minute_options, "initial_option": end_m_opt},
-                {"type": "static_select", "action_id": "event_end_ampm", "options": ampm_options, "initial_option": end_a_opt},
+                {"type": "static_select", "action_id": "event_end_ampm",   "options": ampm_options,   "initial_option": end_a_opt},
             ],
         },
         {
             "type": "input",
             "block_id": "event_location_block",
-            "optional": True,
             "element": {
                 "type": "plain_text_input",
                 "action_id": "event_location_input",
@@ -257,11 +244,11 @@ def _build_event_modal_blocks(event_data=None):
                 "initial_value": location_value,
             },
             "label": {"type": "plain_text", "text": "Location"},
+            "optional": True,
         },
         {
             "type": "input",
             "block_id": "event_description_block",
-            "optional": True,
             "element": {
                 "type": "plain_text_input",
                 "action_id": "event_description_input",
@@ -270,22 +257,22 @@ def _build_event_modal_blocks(event_data=None):
                 "initial_value": description_value,
             },
             "label": {"type": "plain_text", "text": "Description"},
+            "optional": True,
         },
         {
             "type": "input",
             "block_id": "event_image_block",
-            "optional": True,
             "element": {
                 "type": "file_input",
                 "action_id": "event_image_input",
                 "filetypes": ["png", "jpg", "jpeg", "gif", "webp"],
             },
             "label": {"type": "plain_text", "text": "Event photo (flyer, venue, etc.)"},
+            "optional": True,
         },
         {
             "type": "input",
             "block_id": "event_capacity_block",
-            "optional": True,
             "element": {
                 "type": "number_input",
                 "action_id": "event_capacity_input",
@@ -296,44 +283,99 @@ def _build_event_modal_blocks(event_data=None):
                 **({"initial_value": str(capacity_value)} if capacity_value else {}),
             },
             "label": {"type": "plain_text", "text": "Capacity (max attendees)"},
+            "optional": True,
         },
+        # Only show ridesheet option on new events; on edit a ridesheet may already exist
+        *([{
+            "type": "input",
+            "block_id": "event_ridesheet_block",
+            "optional": True,
+            "element": {
+                "type": "radio_buttons",
+                "action_id": "event_ridesheet_input",
+                "options": [
+                    {"text": {"type": "plain_text", "text": "🚗 Yes — create a ridesheet for this event"}, "value": "normal"},
+                ],
+            },
+            "label": {"type": "plain_text", "text": "Ridesheet"},
+        }] if event_data is None else []),
     ]
 
-    return blocks
-
 
 # ---------------------------------------------------------------------------
-# Time parsing helpers
+# Shared helpers
 # ---------------------------------------------------------------------------
 
-def _to_24(h, ampm):
-    if ampm == "AM":
-        return 0 if h == 12 else h
-    return 12 if h == 12 else h + 12
+def _extract_event_fields(view):
+    """Pull all form values out of a submitted event modal view."""
+    def _val(block_id, action_id):
+        return ((view["state"]["values"].get(block_id) or {}).get(action_id) or {})
 
+    title = (_val("event_title_block", "event_title_input").get("value") or "").strip()
+    date_str = _val("event_date_block", "event_date_input").get("selected_date") or datetime.now(TIMEZONE).strftime("%Y-%m-%d")
+    location = (_val("event_location_block", "event_location_input").get("value") or "").strip()
+    description = (_val("event_description_block", "event_description_input").get("value") or "").strip()
+    capacity_raw = _val("event_capacity_block", "event_capacity_input").get("value")
+    capacity = int(capacity_raw) if capacity_raw else None
 
-def _get_select(view, block_id, action_id, default=None):
-    obj = (view["state"]["values"].get(block_id) or {}).get(action_id) or {}
-    opt = obj.get("selected_option")
-    return opt.get("value") if opt else default
+    def _sel(block_id, action_id, default=None):
+        opt = _val(block_id, action_id).get("selected_option")
+        return opt["value"] if opt else default
 
-
-def _parse_times(view, date_str):
-    """Parse start/end datetimes from modal view state. Returns (start_ts, end_ts or None)."""
-    sh = int(_get_select(view, "event_start_time_actions", "event_start_hour") or 12)
-    sm = int(_get_select(view, "event_start_time_actions", "event_start_minute") or 0)
-    sa = _get_select(view, "event_start_time_actions", "event_start_ampm") or "PM"
-    eh = int(_get_select(view, "event_end_time_actions", "event_end_hour") or 0)
-    em = int(_get_select(view, "event_end_time_actions", "event_end_minute") or 0)
-    ea = _get_select(view, "event_end_time_actions", "event_end_ampm") or "PM"
+    def _to_24(h, ampm):
+        if ampm == "AM":
+            return 0 if h == 12 else h
+        return 12 if h == 12 else h + 12
 
     year, month, day = map(int, date_str.split("-"))
-    start_dt = TIMEZONE.localize(datetime(year, month, day, _to_24(sh, sa), sm))
-    end_dt = TIMEZONE.localize(datetime(year, month, day, _to_24(eh, ea), em))
-    if end_dt <= start_dt:
-        end_dt += timedelta(days=1)
 
-    return start_dt.timestamp(), end_dt.timestamp()
+    sh = int(_sel("event_start_time_actions", "event_start_hour") or 12)
+    sm = int(_sel("event_start_time_actions", "event_start_minute") or 0)
+    sa = _sel("event_start_time_actions", "event_start_ampm") or "PM"
+    eh = int(_sel("event_end_time_actions", "event_end_hour") or 12)
+    em = int(_sel("event_end_time_actions", "event_end_minute") or 0)
+    ea = _sel("event_end_time_actions", "event_end_ampm") or "PM"
+
+    start_ts = TIMEZONE.localize(datetime(year, month, day, _to_24(sh, sa), sm)).timestamp()
+    end_ts = TIMEZONE.localize(datetime(year, month, day, _to_24(eh, ea), em)).timestamp()
+
+    # Image
+    image_files = _val("event_image_block", "event_image_input").get("files") or []
+    image_url = None
+    if image_files:
+        f = image_files[0]
+        permalink = f.get("permalink_public", "")
+        url_private = f.get("url_private", "")
+        if permalink and url_private:
+            secret = permalink.split("-")[-1] if "-" in permalink else None
+            if secret:
+                image_url = f"{url_private}?pub_secret={secret}"
+
+    ridesheet_opt = _val("event_ridesheet_block", "event_ridesheet_input").get("selected_option")
+    ridesheet_mode = ridesheet_opt["value"] if ridesheet_opt else None
+
+    return title, date_str, start_ts, end_ts, location, description, capacity, image_url, ridesheet_mode
+
+
+def _cancel_event(client, event_id, event):
+    """Strike through the announcement and unpin it."""
+    channel_id = event.get("channel_id")
+    message_ts = event.get("message_ts")
+    title = event.get("title", "Event")
+    dt_str = _event_datetime_str(event)
+    cancelled_text = f"~📣 *{title}* — {dt_str}~ — Cancelled"
+    if channel_id and message_ts:
+        client.chat_update(
+            channel=channel_id,
+            ts=message_ts,
+            text=cancelled_text,
+            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": cancelled_text}}],
+        )
+        try:
+            client.pins_remove(channel=channel_id, timestamp=message_ts)
+        except Exception:
+            pass
+    _delete_event(event_id)
 
 
 # ---------------------------------------------------------------------------
@@ -342,15 +384,15 @@ def _parse_times(view, date_str):
 
 def register_events_handlers(app):
 
-    # Ack time dropdown actions in the modal (state is captured on submit)
+    # Ack the time dropdown selections (state is captured on modal submit, not here)
     def _ack(ack):
         ack()
 
-    for action_id in (
+    for _action_id in (
         "event_start_hour", "event_start_minute", "event_start_ampm",
         "event_end_hour", "event_end_minute", "event_end_ampm",
     ):
-        app.action(action_id)(_ack)
+        app.action(_action_id)(_ack)
 
     # ------------------------------------------------------------------
     # /event command
@@ -360,24 +402,23 @@ def register_events_handlers(app):
     def cmd_event(ack, body, client, logger):
         try:
             ack()
-            trigger_id = body.get("trigger_id")
             user_id = body["user_id"]
+            trigger_id = body.get("trigger_id")
             subcmd = body.get("text", "").strip().lower()
 
-            # /event help
             if subcmd == "help":
                 help_text = (
                     "*📣 Event Commands*\n\n"
                     "*Creating & Managing*\n"
-                    "• `/event` — announce a new event\n"
+                    "• `/event` — post a new event\n"
                     "• `/event edit` — edit your next upcoming event\n"
                     "• `/event cancel` — cancel your next upcoming event\n\n"
                     "*Discovery*\n"
-                    "• `/event list` — see all upcoming events with RSVP buttons\n\n"
-                    "*RSVP Options*\n"
-                    "• ✅ *Going* — you'll be there\n"
-                    "• 🤔 *Maybe* — not sure yet\n"
-                    "• ❌ *Can't make it* — mark yourself as not going"
+                    "• `/event list` — see all upcoming events\n\n"
+                    "*RSVP*\n"
+                    "• ✅ *Going* — click to mark yourself going, click again to remove yourself\n\n"
+                    "*Ridesheets*\n"
+                    "• Optionally include a ridesheet when creating an event — it'll be posted in the event thread"
                 )
                 client.chat_postEphemeral(
                     channel=body["channel_id"],
@@ -387,7 +428,6 @@ def register_events_handlers(app):
                 )
                 return
 
-            # /event list
             if subcmd == "list":
                 upcoming = _get_upcoming_events()
                 if not upcoming:
@@ -402,21 +442,16 @@ def register_events_handlers(app):
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"*📅 {len(upcoming)} upcoming event{'s' if len(upcoming) != 1 else ''}*"}},
                     {"type": "divider"},
                 ]
-
                 for event_id, event in upcoming:
                     rsvps = event.get("rsvps", {})
                     going = sum(1 for s in rsvps.values() if s == "going")
-                    title = event.get("title", "Untitled Event")
-                    dt_str = _format_event_datetime(event)
-                    location = event.get("location", "")
-                    text = f"*{title}*\n📅 {dt_str}"
-                    if location:
-                        text += f"\n📍 {location}"
-                    text += f"\n✅ {going} going"
-
+                    line = f"*{event.get('title', 'Event')}*\n📅 {_event_datetime_str(event)}"
+                    if event.get("location"):
+                        line += f"\n📍 {event['location']}"
+                    line += f"\n✅ {going} going"
                     blocks.append({
                         "type": "section",
-                        "text": {"type": "mrkdwn", "text": text},
+                        "text": {"type": "mrkdwn", "text": line},
                         "accessory": {
                             "type": "button",
                             "text": {"type": "plain_text", "text": "✅ RSVP Going"},
@@ -425,7 +460,6 @@ def register_events_handlers(app):
                             "style": "primary",
                         },
                     })
-
                 client.chat_postEphemeral(
                     channel=body["channel_id"],
                     user=user_id,
@@ -434,17 +468,15 @@ def register_events_handlers(app):
                 )
                 return
 
-            # /event edit
             if subcmd == "edit":
                 user_events = _get_user_upcoming_events(user_id)
                 if not user_events:
                     client.chat_postEphemeral(
                         channel=body["channel_id"],
                         user=user_id,
-                        text="You don't have any upcoming events to edit. Create one with `/event`.",
+                        text="You don't have any upcoming events to edit.",
                     )
                     return
-
                 event_id, event = user_events[0]
                 client.views_open(
                     trigger_id=trigger_id,
@@ -459,7 +491,6 @@ def register_events_handlers(app):
                 )
                 return
 
-            # /event cancel
             if subcmd == "cancel":
                 user_events = _get_user_upcoming_events(user_id)
                 if not user_events:
@@ -469,21 +500,16 @@ def register_events_handlers(app):
                         text="You don't have any upcoming events to cancel.",
                     )
                     return
-
                 event_id, event = user_events[0]
                 _cancel_event(client, event_id, event)
                 client.chat_postEphemeral(
                     channel=body["channel_id"],
                     user=user_id,
-                    text=f"✅ Your event *{event.get('title')}* has been cancelled.",
+                    text=f"✅ *{event.get('title')}* has been cancelled.",
                 )
                 return
 
-            # /event (default) — open create modal
-            if not trigger_id:
-                logger.error("Missing trigger_id in /event payload")
-                return
-
+            # Default: open create modal
             client.views_open(
                 trigger_id=trigger_id,
                 view={
@@ -495,7 +521,6 @@ def register_events_handlers(app):
                     "blocks": _build_event_modal_blocks(),
                 },
             )
-
         except Exception as e:
             logger.exception("Failed in /event: %s", e)
             raise
@@ -510,33 +535,11 @@ def register_events_handlers(app):
         user_id = body["user"]["id"]
         user_name = body["user"].get("name", "Someone")
 
-        # Extract fields
-        title = ((view["state"]["values"].get("event_title_block") or {}).get("event_title_input") or {}).get("value", "").strip()
-        date_str = ((view["state"]["values"].get("event_date_block") or {}).get("event_date_input") or {}).get("selected_date") or datetime.now(TIMEZONE).strftime("%Y-%m-%d")
-        location = (((view["state"]["values"].get("event_location_block") or {}).get("event_location_input") or {}).get("value") or "").strip()
-        description = (((view["state"]["values"].get("event_description_block") or {}).get("event_description_input") or {}).get("value") or "").strip()
-        capacity_raw = ((view["state"]["values"].get("event_capacity_block") or {}).get("event_capacity_input") or {}).get("value")
-        capacity = int(capacity_raw) if capacity_raw else None
-
-        start_ts, end_ts = _parse_times(view, date_str)
-
-        # Image
-        image_files = ((view["state"]["values"].get("event_image_block") or {}).get("event_image_input") or {}).get("files") or []
-        image_url = None
-        if image_files:
-            file_data = image_files[0]
-            permalink_public = file_data.get("permalink_public")
-            url_private = file_data.get("url_private")
-            if permalink_public and url_private:
-                pub_secret = permalink_public.split("-")[-1] if "-" in permalink_public else None
-                if pub_secret:
-                    image_url = f"{url_private}?pub_secret={pub_secret}"
-
-        event_id = view.get("private_metadata") or ""
+        title, date_str, start_ts, end_ts, location, description, capacity, image_url, ridesheet_mode = _extract_event_fields(view)
+        event_id = (view.get("private_metadata") or "").strip()
         is_edit = bool(event_id)
 
         if is_edit:
-            # Editing existing event
             existing = _get_event(event_id)
             if not existing:
                 return
@@ -553,23 +556,20 @@ def register_events_handlers(app):
                 "image_url": image_url,
             })
             _save_event(event_id, existing)
-
             channel_id = existing.get("channel_id")
             message_ts = existing.get("message_ts")
             if channel_id and message_ts:
-                blocks = _build_announcement_blocks(event_id, existing)
                 client.chat_update(
                     channel=channel_id,
                     ts=message_ts,
-                    text=_build_announcement_text(existing),
-                    blocks=blocks,
+                    text=_announcement_fallback_text(existing),
+                    blocks=_build_announcement_blocks(event_id, existing),
                 )
             return
 
-        # Creating a new event
+        # New event
         event_id = str(uuid.uuid4())
         channel_id = EVENTS_CHANNEL_ID
-
         event = {
             "creator_id": user_id,
             "creator_name": user_name,
@@ -581,33 +581,50 @@ def register_events_handlers(app):
             "description": description,
             "image_url": image_url,
             "capacity": capacity,
-            "rsvps": {},
+            "rsvps": {user_id: "going"},
             "channel_id": channel_id,
             "message_ts": None,
             "created_ts": datetime.now(TIMEZONE).timestamp(),
         }
 
-        blocks = _build_announcement_blocks(event_id, event)
-        msg_text = _build_announcement_text(event)
-        result = client.chat_postMessage(channel=channel_id, text=msg_text, blocks=blocks)
+        result = client.chat_postMessage(
+            channel=channel_id,
+            text=_announcement_fallback_text(event),
+            blocks=_build_announcement_blocks(event_id, event),
+        )
         event["message_ts"] = result["ts"]
         _save_event(event_id, event)
+
+        if ridesheet_mode:
+            from features.ridesheet import create_ridesheet_for_event
+            start_time_str = datetime.fromtimestamp(start_ts, tz=TIMEZONE).strftime("%H:%M") if start_ts else None
+            end_time_str = datetime.fromtimestamp(end_ts, tz=TIMEZONE).strftime("%H:%M") if end_ts else None
+            create_ridesheet_for_event(
+                client=client,
+                channel_id=channel_id,
+                thread_ts=result["ts"],
+                title=title,
+                location=location,
+                date_str=date_str,
+                start_time_str=start_time_str,
+                end_time_str=end_time_str,
+                mode=ridesheet_mode,
+            )
 
         try:
             client.pins_add(channel=channel_id, timestamp=result["ts"])
         except Exception:
             pass
 
-        # Ephemeral manage buttons for the creator
         client.chat_postEphemeral(
             channel=channel_id,
             user=user_id,
-            text="Manage your event",
+            text="Your event has been posted!",
             blocks=[
                 {"type": "section", "text": {"type": "mrkdwn", "text": "Your event has been posted! Manage it here:"}},
                 {
                     "type": "actions",
-                    "block_id": "event_ephemeral_actions",
+                    "block_id": "event_manage_actions",
                     "elements": [
                         {
                             "type": "button",
@@ -632,7 +649,8 @@ def register_events_handlers(app):
     # RSVP actions
     # ------------------------------------------------------------------
 
-    def _handle_rsvp(status, ack, body, client):
+    @app.action("event_rsvp_going")
+    def handle_rsvp_going(ack, body, client):
         ack()
         user_id = body["user"]["id"]
         event_id = body["actions"][0]["value"]
@@ -642,23 +660,20 @@ def register_events_handlers(app):
             return
 
         rsvps = event.get("rsvps", {})
-        prev_status = rsvps.get(user_id)
 
-        # Toggle off if clicking the same status again
-        if prev_status == status:
+        if rsvps.get(user_id) == "going":
             del rsvps[user_id]
         else:
-            # Enforce capacity for "going"
-            if status == "going" and event.get("capacity"):
+            if event.get("capacity"):
                 going_count = sum(1 for s in rsvps.values() if s == "going")
-                if going_count >= event["capacity"] and prev_status != "going":
+                if going_count >= event["capacity"]:
                     client.chat_postEphemeral(
-                        channel=body.get("channel", {}).get("id", event["channel_id"]),
+                        channel=body.get("channel", {}).get("id") or event["channel_id"],
                         user=user_id,
                         text=f"Sorry, this event is full ({event['capacity']}/{event['capacity']} spots taken).",
                     )
                     return
-            rsvps[user_id] = status
+            rsvps[user_id] = "going"
 
         event["rsvps"] = rsvps
         _save_event(event_id, event)
@@ -666,36 +681,12 @@ def register_events_handlers(app):
         channel_id = event.get("channel_id")
         message_ts = event.get("message_ts")
         if channel_id and message_ts:
-            blocks = _build_announcement_blocks(event_id, event)
             client.chat_update(
                 channel=channel_id,
                 ts=message_ts,
-                text=_build_announcement_text(event),
-                blocks=blocks,
+                text=_announcement_fallback_text(event),
+                blocks=_build_announcement_blocks(event_id, event),
             )
-
-        # Confirm to user
-        if user_id in event.get("rsvps", {}):
-            confirm = f"You're marked as *{RSVP_LABELS[status]}* for *{event.get('title')}*."
-        else:
-            confirm = f"You've removed your RSVP for *{event.get('title')}*."
-        client.chat_postEphemeral(
-            channel=body.get("channel", {}).get("id", event["channel_id"]),
-            user=user_id,
-            text=confirm,
-        )
-
-    @app.action("event_rsvp_going")
-    def handle_rsvp_going(ack, body, client):
-        _handle_rsvp("going", ack, body, client)
-
-    @app.action("event_rsvp_maybe")
-    def handle_rsvp_maybe(ack, body, client):
-        _handle_rsvp("maybe", ack, body, client)
-
-    @app.action("event_rsvp_not_going")
-    def handle_rsvp_not_going(ack, body, client):
-        _handle_rsvp("not_going", ack, body, client)
 
     # ------------------------------------------------------------------
     # Edit / Cancel buttons from ephemeral message
@@ -731,37 +722,11 @@ def register_events_handlers(app):
         event = _get_event(event_id)
         if not event:
             return
-
         _cancel_event(client, event_id, event)
-
         response_url = body.get("response_url")
         if response_url:
             requests.post(response_url, json={
                 "replace_original": True,
-                "text": f"✅ Event *{event.get('title')}* has been cancelled.",
-                "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": f"✅ Event *{event.get('title')}* has been cancelled."}}],
+                "text": f"✅ *{event.get('title')}* has been cancelled.",
+                "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": f"✅ *{event.get('title')}* has been cancelled."}}],
             })
-
-
-# ---------------------------------------------------------------------------
-# Cancel helper (updates the posted message)
-# ---------------------------------------------------------------------------
-
-def _cancel_event(client, event_id, event):
-    channel_id = event.get("channel_id")
-    message_ts = event.get("message_ts")
-    title = event.get("title", "Untitled Event")
-    dt_str = _format_event_datetime(event)
-    cancelled_text = f"~📣 *{title}* — {dt_str}~ — Cancelled"
-    if channel_id and message_ts:
-        client.chat_update(
-            channel=channel_id,
-            ts=message_ts,
-            text=cancelled_text,
-            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": cancelled_text}}],
-        )
-        try:
-            client.pins_remove(channel=channel_id, timestamp=message_ts)
-        except Exception:
-            pass
-    _delete_event(event_id)

@@ -1,0 +1,19 @@
+features/events.py
+  s_6ba209c884776d::t_0e594cb4e9de96 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4fd72d74d265d50c14733b310c78b3a709596427",
+  "prompts": {},
+  "sessions": {
+    "s_6ba209c884776d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7fad6e2-adff-4b51-b8a4-ed0e4a0c2b5e",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Brendan Lieu <brendanlieu05@gmail.com>"
+    }
+  }
+}

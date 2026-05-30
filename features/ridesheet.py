@@ -1,6 +1,5 @@
 import json
 import re
-from slack_sdk.errors import SlackApiError # type: ignore
 from firebase_admin import firestore # type: ignore
 import os
 import time
@@ -14,6 +13,23 @@ _SLACK_ID_RE = re.compile(r"^U[A-Z0-9]{6,}$")
 def _fmt_user(uid):
     """Format a user identifier: @mention for Slack IDs, plain text for names."""
     return f"<@{uid}>" if _SLACK_ID_RE.match(uid) else uid
+
+def _fmt_time(t):
+    """Convert HH:MM (24h) to 12-hour time. Returns t unchanged if not parseable."""
+    try:
+        return datetime.strptime(t, "%H:%M").strftime("%-I:%M %p")
+    except (ValueError, TypeError):
+        return t
+
+def _fmt_date_line(meta):
+    date = meta.get("start_date", "TBD")
+    start = meta.get("start_time")
+    end = meta.get("end_time")
+    if start and end:
+        return f"📅 *Date:* {date}  ·  {_fmt_time(start)} – {_fmt_time(end)}"
+    if start:
+        return f"📅 *Date:* {date}  ·  {_fmt_time(start)}"
+    return f"📅 *Date:* {date}"
 
 firebase_app = get_firebase_app()
 db = firestore.client(app=firebase_app)
@@ -122,7 +138,7 @@ def _build_ridesheet_blocks(state, channel_id, message_ts):
             "type": "context",
             "elements": [
                 {"type": "mrkdwn", "text": f"📍 *Location:* {meta.get('location', 'TBD')}"},
-                {"type": "mrkdwn", "text": f"📅 *Dates:* {meta.get('dates', 'TBD')}"}
+                {"type": "mrkdwn", "text": _fmt_date_line(meta)}
             ]
         },
         {"type": "divider"}
@@ -150,29 +166,13 @@ def _build_ridesheet_blocks(state, channel_id, message_ts):
         capacity = car.get("capacity", 4)
 
         direction = car.get("direction", "both")
-        dir_str = ""
-        if direction == "there":
-            dir_str = "\n⚠️ *Note:* Driving THERE only"
-        elif direction == "return":
-            dir_str = "\n⚠️ *Note:* Returning ONLY"
-
         desc = car.get("description", "").strip()
-        desc_str = f"\n📝 *Notes:* {desc}" if desc else ""
 
-        if is_random:
-            row_text = (
-                f"🚗 *Driver:* {_fmt_user(driver_id)}  |  🕰️ *Leaves:* {car.get('departure', 'TBD')}  |  💺 *Seats:* {len(passengers)}/{capacity} filled"
-                f"{dir_str}"
-                f"{desc_str}"
-            )
-        else:
-            pass_str = ", ".join(_fmt_user(p) for p in passengers) if passengers else "_None yet_"
-            row_text = (
-                f"🚗 *Driver:* {_fmt_user(driver_id)}  |  🕰️ *Leaves:* {car.get('departure', 'TBD')}  |  💺 *Capacity:* {len(passengers)}/{capacity}"
-                f"{dir_str}\n"
-                f"🧍 *Passengers:* {pass_str}"
-                f"{desc_str}"
-            )
+        row_text = f"🚗 {_fmt_user(driver_id)} · {len(passengers)}/{capacity} seats"
+        if direction == "there":
+            row_text += "  ·  ⚠️ There only"
+        elif direction == "return":
+            row_text += "  ·  ⚠️ Return only"
 
         blocks.append({
             "type": "section",
@@ -180,16 +180,23 @@ def _build_ridesheet_blocks(state, channel_id, message_ts):
         })
 
         blocks.append({
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "💬 Make Group Chat"},
-                    "action_id": "ridesheet_make_group_chat",
-                    "value": f"{channel_id}|{message_ts}|{driver_id}"
-                }
-            ]
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"⏰ Departs {_fmt_time(car.get('departure', 'TBD'))}"}]
         })
+
+        if not is_random:
+            pass_str = "  ·  ".join(_fmt_user(p) for p in passengers) if passengers else "_none yet_"
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f"👥 {pass_str}"}]
+            })
+
+        if desc:
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f"📝 {desc}"}]
+            })
+
         blocks.append({"type": "divider"})
 
     domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
@@ -200,7 +207,7 @@ def _build_ridesheet_blocks(state, channel_id, message_ts):
             "elements": [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "🌐 Manage Ridesheet"},
+                    "text": {"type": "plain_text", "text": "🚗 Join/Add Car"},
                     "action_id": "ridesheet_open_web",
                     "url": f"{web_base}/{channel_id}/{message_ts}",
                     "style": "primary"
@@ -238,6 +245,8 @@ def register_ridesheet_handlers(app):
         init_loc = initial_data.get("location") or ""
         init_start = initial_data.get("start_date")
         init_end = initial_data.get("end_date")
+        init_start_time = initial_data.get("start_time")
+        init_end_time = initial_data.get("end_time")
 
         blocks = []
 
@@ -294,6 +303,30 @@ def register_ridesheet_handlers(app):
             "label": {"type": "plain_text", "text": "End Date"}
         })
 
+        start_time_element = {"type": "timepicker", "action_id": "start_time_input"}
+        if init_start_time:
+            start_time_element["initial_time"] = init_start_time
+
+        blocks.append({
+            "type": "input",
+            "block_id": "start_time_block",
+            "element": start_time_element,
+            "label": {"type": "plain_text", "text": "Start Time"},
+            "optional": True
+        })
+
+        end_time_element = {"type": "timepicker", "action_id": "end_time_input"}
+        if init_end_time:
+            end_time_element["initial_time"] = init_end_time
+
+        blocks.append({
+            "type": "input",
+            "block_id": "end_time_block",
+            "element": end_time_element,
+            "label": {"type": "plain_text", "text": "End Time"},
+            "optional": True
+        })
+
         return {
             "type": "modal",
             "callback_id": "ridesheet_meta_modal",
@@ -322,13 +355,17 @@ def register_ridesheet_handlers(app):
 
         start_date = vals["start_date_block"]["start_date_input"]["selected_date"]
         end_date = vals["end_date_block"]["end_date_input"]["selected_date"]
+        start_time = (vals.get("start_time_block") or {}).get("start_time_input", {}).get("selected_time")
+        end_time = (vals.get("end_time_block") or {}).get("end_time_input", {}).get("selected_time")
 
         new_meta = {
             "title": vals["title_block"]["title_input"]["value"],
             "location": vals["location_block"]["location_input"]["value"],
             "start_date": start_date,
             "end_date": end_date,
-            "dates": f"{start_date} to {end_date}"
+            "dates": f"{start_date} to {end_date}",
+            "start_time": start_time,
+            "end_time": end_time,
         }
 
         if meta.get("ridesheet_mode"):
@@ -355,50 +392,5 @@ def register_ridesheet_handlers(app):
     @app.action("ridesheet_open_web")
     def action_open_web(ack, body, client):
         ack()
-
-    def _invite_to_gc(client, gc_id, user_ids):
-        """Invite users to an existing conversation, ignoring already-in-channel errors."""
-        for uid in user_ids:
-            try:
-                client.conversations_invite(channel=gc_id, users=uid)
-            except SlackApiError as e:
-                if e.response.get("error") != "already_in_channel":
-                    raise
-
-    @app.action("ridesheet_make_group_chat")
-    def action_make_group_chat(ack, body, client):
-        ack()
-        val = body["actions"][0]["value"]
-        chan, ts, driver_id = val.split("|")
-        user_id = body["user"]["id"]
-
-        state = get_state(chan, ts)
-        if not state or driver_id not in state.get("cars", {}): return
-
-        car = state["cars"][driver_id]
-        users_to_invite = list(set([driver_id] + car["passengers"] + [user_id]))
-
-        if len(users_to_invite) <= 1:
-            client.chat_postEphemeral(channel=chan, user=user_id, text="You need at least one passenger to start a group chat!")
-            return
-
-        existing_gc = car.get("group_chat_id")
-
-        try:
-            if existing_gc:
-                _invite_to_gc(client, existing_gc, users_to_invite)
-                client.chat_postEphemeral(channel=chan, user=user_id, text="Group chat already exists — any new members have been added! 💬")
-            else:
-                res = client.conversations_open(users=",".join(users_to_invite))
-                mpim_id = res["channel"]["id"]
-
-                state["cars"][driver_id]["group_chat_id"] = mpim_id
-                save_state(chan, ts, state)
-
-                title = state["metadata"].get("title", "Upcoming Trip")
-                client.chat_postMessage(channel=mpim_id, text=f"🚗 Ridesheet chat for *{title}*.")
-                client.chat_postEphemeral(channel=chan, user=user_id, text="Group chat created successfully! 💬")
-        except SlackApiError as e:
-            client.chat_postEphemeral(channel=chan, user=user_id, text=f"Could not open group chat: `{e.response['error']}` (Ensure the bot has `mpim:write` or `conversations:write` scopes).")
 
     threading.Thread(target=_ridesheet_cleanup_loop, daemon=True).start()

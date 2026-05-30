@@ -480,7 +480,7 @@ function fmtDate(d) {
 
 function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
-                        .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+                        .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 function isUrl(s) { return /^https?:\\/\\//i.test(s); }
@@ -629,7 +629,7 @@ async function saveNotes(dId) {
 
 async function removePassenger(driverId, passengerName) {
   if (!confirm(`Remove ${passengerName} from this car?`)) return;
-  await apiAs(passengerName, `/join/${driverId}`);
+  await apiAs('admin', `/remove-passenger/${encodeURIComponent(driverId)}`, { passenger_id: passengerName });
 }
 
 // ── Render ────────────────────────────────────────────────────────────────────
@@ -643,9 +643,10 @@ function render() {
   titleEl.textContent = meta.title || 'Ridesheet';
   titleEl.onclick = makeTitleEditable;
 
-  const sd = meta.start_date, ed = meta.end_date;
+  const sd = meta.start_date;
   let dateStr = sd ? fmtDate(sd) : 'TBD';
-  if (ed && ed !== sd) dateStr += ' – ' + fmtDate(ed);
+  if (meta.start_time) dateStr += '  ·  ' + fmtDep(meta.start_time);
+  if (meta.end_time)   dateStr += ' – ' + fmtDep(meta.end_time);
   const dateCell = document.getElementById('date-cell');
   dateCell.innerHTML = `&#128197; ${esc(dateStr)}`;
   dateCell.onclick = makeDateEditable;
@@ -768,8 +769,9 @@ function makeDateEditable() {
   cell.onclick = null;
   cell.innerHTML = `&#128197;
     <input type="date" id="inline-start" value="${meta.start_date||''}" style="border:1px solid #bbb;border-radius:3px;padding:2px 6px;font-size:13px">
-    <span>–</span>
-    <input type="date" id="inline-end" value="${meta.end_date||''}" style="border:1px solid #bbb;border-radius:3px;padding:2px 6px;font-size:13px">
+    <input type="time" id="inline-start-time" value="${meta.start_time||''}" style="border:1px solid #bbb;border-radius:3px;padding:2px 6px;font-size:13px;margin-left:4px">
+    <span style="margin:0 2px">–</span>
+    <input type="time" id="inline-end-time" value="${meta.end_time||''}" style="border:1px solid #bbb;border-radius:3px;padding:2px 6px;font-size:13px">
     <button onclick="saveDates()" style="background:#7B68AE;color:white;border:none;border-radius:3px;padding:2px 8px;cursor:pointer;font-size:12px;margin-left:6px">&#10003;</button>
     <button onclick="render()" style="background:none;border:1px solid #ccc;border-radius:3px;padding:2px 8px;cursor:pointer;font-size:12px">&#10005;</button>`;
   document.getElementById('inline-start').focus();
@@ -777,8 +779,10 @@ function makeDateEditable() {
 
 async function saveDates() {
   await saveMeta({
-    start_date: document.getElementById('inline-start').value,
-    end_date:   document.getElementById('inline-end').value,
+    start_date:  document.getElementById('inline-start').value,
+    end_date:    document.getElementById('inline-start').value,
+    start_time:  document.getElementById('inline-start-time').value || null,
+    end_time:    document.getElementById('inline-end-time').value   || null,
   });
 }
 
@@ -860,6 +864,20 @@ def ridesheet_join(channel_id, message_ts, driver_id):
     return _action(channel_id, message_ts, fn)
 
 
+@flask_app.post("/<channel_id>/<message_ts>/remove-passenger/<driver_id>")
+def ridesheet_remove_passenger(channel_id, message_ts, driver_id):
+    def fn(uid, state, data):
+        passenger_id = data.get("passenger_id", "").strip()
+        if not passenger_id: return "passenger_id required"
+        car = state.get("cars", {}).get(driver_id)
+        if not car: return "car not found"
+        if passenger_id not in car.get("passengers", []):
+            return "passenger not found"
+        car["passengers"].remove(passenger_id)
+        car.get("passenger_phones", {}).pop(passenger_id, None)
+    return _action(channel_id, message_ts, fn)
+
+
 @flask_app.post("/<channel_id>/<message_ts>/add-car")
 def ridesheet_add_car(channel_id, message_ts):
     def fn(uid, state, data):
@@ -920,6 +938,9 @@ def ridesheet_edit_meta(channel_id, message_ts):
         m = state["metadata"]
         for key in ("title", "location", "start_date", "end_date"):
             if data.get(key):
+                m[key] = data[key]
+        for key in ("start_time", "end_time"):
+            if key in data:
                 m[key] = data[key]
         if data.get("start_date") and data.get("end_date"):
             m["dates"] = f"{data['start_date']} to {data['end_date']}"

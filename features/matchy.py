@@ -2,7 +2,7 @@
 CTC Matchy: weekly pairing bot.
 
 Slash command is MATCHY_COMMAND in matchy_core (currently /matchytest for testing).
-Leaderboard = verified channel participation (posts / @mentions in Matchy channel).
+Leaderboard = verified channel participation (@mentions in Matchy channel, not threads).
 Roster & pairing = matchyData/members in Firestore.
 
 Scheduled: Mondays 5:00 PM America/Los_Angeles.
@@ -27,6 +27,7 @@ from features.matchy_core import (
 )
 from features.matchy_participation import (
     get_participation_count,
+    register_participation_events,
     run_full_recount,
     run_incremental_count,
     set_user_count,
@@ -54,7 +55,10 @@ def _build_leaderboard_blocks(leaderboard: list[tuple[str, int]]) -> list:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": "*Verified activity* — messages sent or @mentions in the Matchy channel",
+                "text": (
+                    "*Verified activity* — top-level messages where you @ someone else "
+                    "or someone @'s you (thread replies don't count)"
+                ),
             },
         },
     ]
@@ -124,6 +128,7 @@ def _weekly_matchy_scheduler_loop() -> None:
 
 def register_matchy_handlers(app):
     """Register matchy-related handlers with the Bolt app."""
+    register_participation_events(app)
 
     def _check_admin(user_id: str) -> bool:
         return user_id in ADMIN_USER_IDS
@@ -230,9 +235,11 @@ def register_matchy_handlers(app):
 
             def _do_recount():
                 try:
-                    leaderboard = run_full_recount(client)
+                    leaderboard, note = run_full_recount(client)
                     top = ", ".join(f"<@{uid}>: {c}" for uid, c in leaderboard[:5]) or "none"
                     msg = f"Recount complete!\n*Top participants:* {top}"
+                    if note:
+                        msg += f"\n\n{note}"
                 except Exception as e:
                     logger.error("Matchy recount failed: %s", e)
                     msg = f"Recount failed: {e}"

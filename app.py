@@ -25,10 +25,6 @@ register_spottings_handlers(app)
 register_matchy_handlers(app)
 register_events_handlers(app)
 
-@app.event("message")
-def handle_message_events(body, logger):
-    pass
-
 
 def _start_web_server():
     """Run Flask server for the ridesheet website and Gmail OAuth callback."""

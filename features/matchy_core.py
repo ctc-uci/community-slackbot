@@ -241,7 +241,21 @@ def validate_match_assignments(matches: list, members_data: dict) -> dict:
     return {"ok": True}
 
 
-def update_previous_matches(current_matches: list, previous_matches: dict) -> None:
+def _increment_matchy_counts_for_round(matches: list, members: list) -> None:
+    """+1 matchyCount per member placed in a group this generation."""
+    by_id = {m["slackId"]: m for m in members if m.get("slackId")}
+    for group in matches:
+        for slack_id in group:
+            member = by_id.get(slack_id)
+            if not member:
+                continue
+            current = member.get("matchyCount")
+            if current is None:
+                current = member.get("rep") or 0
+            member["matchyCount"] = int(current) + 1
+
+
+def update_previous_matches(current_matches: list, previous_matches: dict, members: list) -> None:
     for match in current_matches:
         for i in range(len(match)):
             for j in range(i + 1, len(match)):
@@ -253,8 +267,11 @@ def update_previous_matches(current_matches: list, previous_matches: dict) -> No
                 if u1 not in previous_matches[u2]:
                     previous_matches[u2].append(u1)
 
+    _increment_matchy_counts_for_round(current_matches, members)
+
     data = load_members_data()
     data["previousMatches"] = previous_matches
+    data["members"] = members
     save_members_data(data)
 
 
@@ -273,7 +290,8 @@ def create_group_chats(
 
     data = load_members_data()
     previous_matches = dict(data.get("previousMatches") or {})
-    update_previous_matches(matches, previous_matches)
+    members = data.get("members") or []
+    update_previous_matches(matches, previous_matches, members)
 
     created_groups = []
     for i, match in enumerate(matches):

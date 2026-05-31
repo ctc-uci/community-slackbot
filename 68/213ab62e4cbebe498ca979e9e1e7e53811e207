@@ -1,0 +1,31 @@
+features/matchy_store.py
+  s_109fc68f3cb13c::t_6c84bbd8b83766 3
+  s_109fc68f3cb13c::t_12b1a5ad2539d1 91-150
+features/matchy.py
+  s_109fc68f3cb13c::t_256690e1682abb 293
+  s_109fc68f3cb13c::t_ca354e2c683fea 223-225
+  s_109fc68f3cb13c::t_372bbc9770ce62 350-353,356
+  s_109fc68f3cb13c::t_540a5d26e9d930 2,5,27-32,45,49,51,53-54,57
+  s_109fc68f3cb13c::t_ee1754161a8915 68,71-72
+  s_109fc68f3cb13c::t_a1918954daa169 249,300
+  s_109fc68f3cb13c::t_6a6c440c518bde 163-173
+features/matchy_core.py
+  s_109fc68f3cb13c::t_e434263570f77f 293-294
+  s_109fc68f3cb13c::t_87326dab300d6e 244-258,270-271,274
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "68213ab62e4cbebe498ca979e9e1e7e53811e207",
+  "prompts": {},
+  "sessions": {
+    "s_109fc68f3cb13c": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "8d33a36c-936f-4924-bae6-db37dae44503",
+        "model": "composer-2.5"
+      },
+      "human_author": "Brendan Lieu <brendanlieu05@gmail.com>"
+    }
+  }
+}

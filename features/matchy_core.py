@@ -13,6 +13,9 @@ from features.matchy_store import load_members_data, save_members_data
 
 logger = logging.getLogger(__name__)
 
+# Temporary test command; switch to /matchy for production.
+MATCHY_COMMAND = "/matchytest"
+
 MENTION_PATTERN = re.compile(r"<@(U[A-Z0-9]+)(?:\|[^>]*)?>", re.I)
 HANDLE_PATTERN = re.compile(r"^@?([A-Za-z0-9._-]+)$", re.I)
 
@@ -500,14 +503,14 @@ def toggle_pause() -> str:
     data["matchyPaused"] = not data.get("matchyPaused")
     save_members_data(data)
     if data["matchyPaused"]:
-        return "⏸️ Matchy generation has been paused. It will remain paused until you toggle it back on with `/matchy pause`."
+        return f"⏸️ Matchy generation has been paused. It will remain paused until you toggle it back on with `{MATCHY_COMMAND} pause`."
     return "▶️ Matchy generation has been resumed. Scheduled runs will now proceed normally."
 
 
 def skip_next_week() -> str:
     data = load_members_data()
     if data.get("matchyPaused"):
-        return "⏸️ Matchy generation is already paused. Use `/matchy pause` to toggle it back on first."
+        return f"⏸️ Matchy generation is already paused. Use `{MATCHY_COMMAND} pause` to toggle it back on first."
     data["skipNextMatchy"] = True
     save_members_data(data)
     return "⏸️ Matchy generation will be skipped for the next scheduled run."

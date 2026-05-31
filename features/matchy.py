@@ -1,17 +1,8 @@
 """
 CTC Matchy: weekly pairing bot + participation tracking.
 
-Matching (ported from ctc-slackbot):
-- /matchy — toggle opt-in/out of weekly meetups
-- /matchy help — list commands
-- /matchy list — member roster summary
-- /matchy leaderboard — participation leaderboard
-- /matchy pause — admin: pause or resume scheduled generation
-- /matchy skip — admin: skip the next scheduled run once
-
-Participation counting (channel activity):
-- /matchy count edit — admin: edit a user's count
-- /matchy count recount — admin: full history recount
+Slash command is MATCHY_COMMAND in matchy_core (currently /matchytest for testing).
+Subcommands: help, list, leaderboard, pause, skip, count edit, count recount, sync (admin).
 
 Scheduled: Mondays 5:00 PM America/Los_Angeles.
 """
@@ -29,6 +20,7 @@ from firebase_admin import firestore
 from firebase_client import get_firebase_app
 
 from features.matchy_core import (
+    MATCHY_COMMAND,
     format_list_message,
     generate_matches,
     parse_override_user_ids,
@@ -216,16 +208,17 @@ def _build_leaderboard_blocks(leaderboard: list) -> list:
 
 
 def _help_text() -> str:
+    c = MATCHY_COMMAND
     return (
         "*Matchy commands:*\n"
-        "• `/matchy` — join or leave weekly Matchy meetups\n"
-        "• `/matchy help` — show this message\n"
-        "• `/matchy list` — member roster summary\n"
-        "• `/matchy leaderboard` — participation leaderboard\n"
-        "• `/matchy pause` — pause or resume scheduled generation _(admin)_\n"
-        "• `/matchy skip` — skip the next scheduled run once _(admin)_\n"
-        "• `/matchy count edit` — edit participation count _(admin)_\n"
-        "• `/matchy count recount` — full participation recount _(admin)_"
+        f"• `{c}` — join or leave weekly Matchy meetups\n"
+        f"• `{c} help` — show this message\n"
+        f"• `{c} list` — member roster summary\n"
+        f"• `{c} leaderboard` — participation leaderboard\n"
+        f"• `{c} pause` — pause or resume scheduled generation _(admin)_\n"
+        f"• `{c} skip` — skip the next scheduled run once _(admin)_\n"
+        f"• `{c} count edit` — edit participation count _(admin)_\n"
+        f"• `{c} count recount` — full participation recount _(admin)_"
     )
 
 
@@ -299,7 +292,7 @@ def register_matchy_handlers(app):
             kwargs["blocks"] = blocks
         client.chat_postEphemeral(**kwargs)
 
-    @app.command("/matchy")
+    @app.command(MATCHY_COMMAND)
     def cmd_matchy(ack, body, client, logger):
         raw = (body.get("text") or "").strip()
         parts = raw.split(None, 1)
@@ -308,7 +301,7 @@ def register_matchy_handlers(app):
         user_id = body["user_id"]
         channel_id = body.get("channel_id", "")
 
-        # Participation subcommands: /matchy count ...
+        # Participation subcommands: {MATCHY_COMMAND} count ...
         if sub == "count":
             count_parts = rest.split(None, 1)
             count_sub = count_parts[0].lower() if count_parts else ""
@@ -406,9 +399,9 @@ def register_matchy_handlers(app):
         else:
             _ephemeral(
                 client, channel_id, user_id,
-                "*Matchy count commands (admin):*\n"
-                "• `/matchy count edit`\n"
-                "• `/matchy count recount`",
+                f"*Matchy count commands (admin):*\n"
+                f"• `{MATCHY_COMMAND} count edit`\n"
+                f"• `{MATCHY_COMMAND} count recount`",
             )
 
     def _open_count_edit_modal(body, client, logger):

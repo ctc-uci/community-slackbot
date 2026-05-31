@@ -1,0 +1,25 @@
+web/ridesheet_spa.html
+  s_109fc68f3cb13c::t_7df24ccabdcc92 746,750-804
+  s_109fc68f3cb13c::t_8e04cedc60a63e 255,257-386,388-404
+  s_109fc68f3cb13c::t_00947207ea84ce 951
+  s_109fc68f3cb13c::t_3cc487a560bd58 5
+  s_109fc68f3cb13c::t_0d7b1fa1bd3c97 387
+  s_109fc68f3cb13c::t_fb945e94028ef3 419-420,423
+  s_109fc68f3cb13c::t_6c02f681750e28 823-827
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "fface4180170902620e7db71aac7eb8d22c7888d",
+  "prompts": {},
+  "sessions": {
+    "s_109fc68f3cb13c": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "8d33a36c-936f-4924-bae6-db37dae44503",
+        "model": "composer-2.5"
+      },
+      "human_author": "Brendan Lieu <brendanlieu05@gmail.com>"
+    }
+  }
+}

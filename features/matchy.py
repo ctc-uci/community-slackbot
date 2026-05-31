@@ -1,31 +1,45 @@
 """
-CTC Matchy bot: track participation in Matchy.
+CTC Matchy: weekly pairing bot + participation tracking.
 
-A user participates if they sent a message or were @mentioned in the Matchy channel.
-Both sender and all unique @mentions in a message count as one participation each.
+Matching (ported from ctc-slackbot):
+- /matchy — toggle opt-in/out of weekly meetups
+- /matchy help — list commands
+- /matchy list — member roster summary
+- /matchy leaderboard — participation leaderboard
+- /matchy pause — admin: pause or resume scheduled generation
+- /matchy skip — admin: skip the next scheduled run once
 
-Counting strategy (incremental):
-- Stores last_processed_ts in Firebase (matchy_meta/state)
-- On startup: silent catch-up (process any messages missed while offline)
-- Admins can force a full recount via /matchycount recount at any time
+Participation counting (channel activity):
+- /matchy count edit — admin: edit a user's count
+- /matchy count recount — admin: full history recount
 
-Admin commands:
-- /matchycount edit    — manually set a user's participation count
-- /matchycount recount — full history recount (resets incremental pointer)
-- /matchycount leaderboard — show the participation leaderboard (ephemeral)
+Scheduled: Mondays 5:00 PM America/Los_Angeles.
 """
 import os
 import re
 import threading
 import time
 from collections import defaultdict
+from datetime import datetime, timedelta
 
+import pytz
 from slack_sdk import WebClient
 
-from firebase_client import get_firebase_app
 from firebase_admin import firestore
+from firebase_client import get_firebase_app
+
+from features.matchy_core import (
+    format_list_message,
+    generate_matches,
+    parse_override_user_ids,
+    set_match_override,
+    skip_next_week,
+    toggle_pause,
+    toggle_user_matchy,
+)
 
 MATCHY_CHANNEL_ID = os.environ.get("MATCHY_CHANNEL_ID", "C01FL4VCE1Z")
+MATCHY_TIMEZONE = pytz.timezone("America/Los_Angeles")
 
 ADMIN_USER_IDS = frozenset({
     "U0631Q51G04",
@@ -36,13 +50,14 @@ ADMIN_USER_IDS = frozenset({
 
 MENTION_PATTERN = re.compile(r"<@(U[A-Z0-9]+)(?:\|[^>]*)?>")
 
+# Participation counter Firestore (separate from matchyData/members)
 FIRESTORE_COLLECTION = "matchy"
 MATCHY_META_COLLECTION = "matchy_meta"
 MATCHY_META_DOC = "state"
 
 
 # ---------------------------------------------------------------------------
-# Firestore helpers
+# Participation counter — Firestore helpers
 # ---------------------------------------------------------------------------
 
 def _get_firestore():
@@ -81,7 +96,6 @@ def _set_last_processed_ts(ts: float) -> None:
 
 
 def _build_leaderboard_from_firebase() -> list:
-    """Return sorted list of (uid, participation_count) from Firebase."""
     db = _get_firestore()
     counts = {}
     for doc in db.collection(FIRESTORE_COLLECTION).stream():
@@ -89,10 +103,6 @@ def _build_leaderboard_from_firebase() -> list:
         counts[doc.id] = data.get("participation_count", 0)
     return sorted(counts.items(), key=lambda x: -x[1])
 
-
-# ---------------------------------------------------------------------------
-# Message processing
-# ---------------------------------------------------------------------------
 
 def _extract_mentions(text: str) -> set:
     if not text:
@@ -129,48 +139,33 @@ def _fetch_channel_messages(client: WebClient, channel_id: str, oldest: float = 
 
 
 def _compute_counts_from_messages(messages: list) -> dict:
-    """
-    Return participation_count per user.
-    Each message contributes 1 to the sender and 1 to each unique @mention
-    (excluding self-mentions).
-    """
     counts = defaultdict(int)
     for msg in messages:
         sender = msg.get("user")
         text = msg.get("text", "")
         mentioned = _extract_mentions(text)
-
         participants = set()
         if sender:
             participants.add(sender)
         for uid in mentioned:
             if uid != sender:
                 participants.add(uid)
-
         for uid in participants:
             counts[uid] += 1
-
     return dict(counts)
 
-
-# ---------------------------------------------------------------------------
-# Counting runs
-# ---------------------------------------------------------------------------
 
 def _run_incremental_count(client: WebClient) -> list:
     if not MATCHY_CHANNEL_ID:
         return []
-
     last_ts = _get_last_processed_ts()
     oldest = last_ts + 1e-6 if last_ts > 0 else 0.0
     messages = _fetch_channel_messages(client, MATCHY_CHANNEL_ID, oldest=oldest)
-
     if not messages:
         return _build_leaderboard_from_firebase()
 
     new_counts = _compute_counts_from_messages(messages)
     max_ts = max(float(m["ts"]) for m in messages)
-
     db = _get_firestore()
 
     if last_ts == 0:
@@ -191,64 +186,99 @@ def _run_incremental_count(client: WebClient) -> list:
 def _run_full_recount(client: WebClient) -> list:
     if not MATCHY_CHANNEL_ID:
         return []
-
     messages = _fetch_channel_messages(client, MATCHY_CHANNEL_ID)
     counts = _compute_counts_from_messages(messages)
-
     db = _get_firestore()
     for uid, count in counts.items():
         db.collection(FIRESTORE_COLLECTION).document(uid).set(
             {"participation_count": count}
         )
-
     if messages:
         max_ts = max(float(m["ts"]) for m in messages)
         _set_last_processed_ts(max_ts)
-
     return sorted(counts.items(), key=lambda x: -x[1])
 
 
-# ---------------------------------------------------------------------------
-# Leaderboard
-# ---------------------------------------------------------------------------
-
 def _build_leaderboard_blocks(leaderboard: list) -> list:
     blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": "Matchy Participation Leaderboard", "emoji": True}},
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "Matchy Participation Leaderboard", "emoji": True},
+        },
         {"type": "section", "text": {"type": "mrkdwn", "text": "*Most Participations*"}},
     ]
     if leaderboard:
-        lines = [
-            f"{i + 1}. <@{uid}> \u2014 {count}"
-            for i, (uid, count) in enumerate(leaderboard[:10])
-        ]
+        lines = [f"{i + 1}. <@{uid}> — {count}" for i, (uid, count) in enumerate(leaderboard[:10])]
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}})
     else:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "_No participations yet!_"}})
     return blocks
 
 
+def _help_text() -> str:
+    return (
+        "*Matchy commands:*\n"
+        "• `/matchy` — join or leave weekly Matchy meetups\n"
+        "• `/matchy help` — show this message\n"
+        "• `/matchy list` — member roster summary\n"
+        "• `/matchy leaderboard` — participation leaderboard\n"
+        "• `/matchy pause` — pause or resume scheduled generation _(admin)_\n"
+        "• `/matchy skip` — skip the next scheduled run once _(admin)_\n"
+        "• `/matchy count edit` — edit participation count _(admin)_\n"
+        "• `/matchy count recount` — full participation recount _(admin)_"
+    )
+
+
 # ---------------------------------------------------------------------------
-# Startup scheduler
+# Schedulers
 # ---------------------------------------------------------------------------
 
-def _scheduler_loop() -> None:
-    """On startup: silent catch-up (process any messages missed while offline)."""
+def _participation_catchup_loop() -> None:
     token = os.environ.get("SLACK_BOT_TOKEN")
     if not token or not MATCHY_CHANNEL_ID:
         return
-
     client = WebClient(token=token)
-
     try:
         client.conversations_join(channel=MATCHY_CHANNEL_ID)
     except Exception:
         pass
-
     try:
         _run_incremental_count(client)
     except Exception:
         pass
+
+
+def _seconds_until_next_monday_5pm() -> float:
+    now = datetime.now(MATCHY_TIMEZONE)
+    days_ahead = (0 - now.weekday()) % 7
+    target = (now + timedelta(days=days_ahead)).replace(
+        hour=17, minute=0, second=0, microsecond=0
+    )
+    if days_ahead == 0 and now >= target:
+        target += timedelta(days=7)
+    return max((target - now).total_seconds(), 60.0)
+
+
+def _weekly_matchy_scheduler_loop() -> None:
+    token = os.environ.get("SLACK_BOT_TOKEN")
+    if not token:
+        return
+    client = WebClient(token=token)
+
+    while True:
+        time.sleep(_seconds_until_next_monday_5pm())
+        try:
+            def respond(msg: str) -> None:
+                prefix = "🤖 *Automated Matchy Generation*\n\n"
+                client.chat_postMessage(
+                    channel=MATCHY_CHANNEL_ID,
+                    text=prefix + msg,
+                )
+
+            generate_matches(client, respond)
+        except Exception:
+            pass
+        time.sleep(60)
 
 
 # ---------------------------------------------------------------------------
@@ -261,138 +291,179 @@ def register_matchy_handlers(app):
     def _check_admin(user_id: str) -> bool:
         return user_id in ADMIN_USER_IDS
 
-    @app.command("/matchycount")
+    def _ephemeral(client, channel_id, user_id, text, blocks=None):
+        if not channel_id:
+            return
+        kwargs = {"channel": channel_id, "user": user_id, "text": text}
+        if blocks:
+            kwargs["blocks"] = blocks
+        client.chat_postEphemeral(**kwargs)
+
+    @app.command("/matchy")
     def cmd_matchy(ack, body, client, logger):
-        text = (body.get("text") or "").strip().lower()
+        raw = (body.get("text") or "").strip()
+        parts = raw.split(None, 1)
+        sub = parts[0].lower() if parts else ""
+        rest = parts[1] if len(parts) > 1 else ""
         user_id = body["user_id"]
         channel_id = body.get("channel_id", "")
 
-        if text == "edit":
-            ack()
-            if not _check_admin(user_id):
-                client.chat_postEphemeral(
-                    channel=channel_id,
-                    user=user_id,
-                    text="You don't have permission to use this command.",
-                )
-                return
-
-            trigger_id = body.get("trigger_id")
-            if not trigger_id:
-                logger.error("Missing trigger_id in matchy edit payload")
-                return
-
-            client.views_open(trigger_id=trigger_id, view={
-                "type": "modal",
-                "callback_id": "matchy_edit_modal",
-                "title": {"type": "plain_text", "text": "Edit Participation Count"},
-                "submit": {"type": "plain_text", "text": "Save"},
-                "blocks": [
-                    {
-                        "type": "input",
-                        "dispatch_action": True,
-                        "block_id": "user_block",
-                        "element": {
-                            "type": "users_select",
-                            "action_id": "matchy_user_select",
-                            "placeholder": {"type": "plain_text", "text": "Select a user"},
-                        },
-                        "label": {"type": "plain_text", "text": "User"},
-                    },
-                    {
-                        "type": "section",
-                        "block_id": "current_count_display",
-                        "text": {"type": "mrkdwn", "text": "*Current count:* _Select a user above_"},
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "count_block",
-                        "element": {
-                            "type": "plain_text_input",
-                            "action_id": "matchy_count_input",
-                            "placeholder": {"type": "plain_text", "text": "Enter new count"},
-                            "initial_value": "",
-                        },
-                        "label": {"type": "plain_text", "text": "New count"},
-                    },
-                ],
-            })
+        # Participation subcommands: /matchy count ...
+        if sub == "count":
+            count_parts = rest.split(None, 1)
+            count_sub = count_parts[0].lower() if count_parts else ""
+            _handle_count_subcommand(
+                ack, body, client, logger, count_sub, user_id, channel_id, _check_admin
+            )
             return
 
         ack()
 
-        if text == "recount":
+        if sub in ("", "join", "toggle"):
+            msg = toggle_user_matchy(client, user_id)
+            _ephemeral(client, channel_id, user_id, msg)
+        elif sub == "list":
+            _ephemeral(client, channel_id, user_id, format_list_message())
+        elif sub == "sync":
             if not _check_admin(user_id):
-                client.chat_postEphemeral(
-                    channel=channel_id,
-                    user=user_id,
-                    text="You don't have permission to use this command.",
-                )
+                _ephemeral(client, channel_id, user_id, _help_text())
+                return
+            msg = set_match_override(parse_override_user_ids(rest, client))
+            _ephemeral(client, channel_id, user_id, msg)
+        elif sub == "leaderboard":
+            def _do_leaderboard():
+                try:
+                    leaderboard = _run_incremental_count(client)
+                    blocks = _build_leaderboard_blocks(leaderboard)
+                    _ephemeral(
+                        client, channel_id, user_id,
+                        "Matchy Participation Leaderboard",
+                        blocks=blocks,
+                    )
+                except Exception as e:
+                    logger.error("Matchy leaderboard failed: %s", e)
+
+            threading.Thread(target=_do_leaderboard, daemon=True).start()
+        elif sub == "pause":
+            if not _check_admin(user_id):
+                _ephemeral(client, channel_id, user_id, "You don't have permission to use this command.")
+                return
+            _ephemeral(client, channel_id, user_id, toggle_pause())
+        elif sub == "skip":
+            if not _check_admin(user_id):
+                _ephemeral(client, channel_id, user_id, "You don't have permission to use this command.")
+                return
+            _ephemeral(client, channel_id, user_id, skip_next_week())
+        elif sub == "help":
+            _ephemeral(client, channel_id, user_id, _help_text())
+        elif sub == "generate":
+            if not _check_admin(user_id):
+                _ephemeral(client, channel_id, user_id, "You don't have permission to use this command.")
+                return
+
+            def _do_generate():
+                try:
+                    def respond(msg: str) -> None:
+                        _ephemeral(client, channel_id, user_id, msg)
+
+                    generate_matches(client, respond)
+                except Exception as e:
+                    logger.error("Matchy generate failed: %s", e)
+                    _ephemeral(client, channel_id, user_id, f"Generation failed: {e}")
+
+            threading.Thread(target=_do_generate, daemon=True).start()
+        else:
+            _ephemeral(client, channel_id, user_id, _help_text())
+
+    def _handle_count_subcommand(ack, body, client, logger, count_sub, user_id, channel_id, check_admin):
+        if count_sub == "edit":
+            ack()
+            if not check_admin(user_id):
+                _ephemeral(client, channel_id, user_id, "You don't have permission to use this command.")
+                return
+            _open_count_edit_modal(body, client, logger)
+            return
+
+        ack()
+
+        if count_sub == "recount":
+            if not check_admin(user_id):
+                _ephemeral(client, channel_id, user_id, "You don't have permission to use this command.")
                 return
 
             def _do_recount():
                 try:
                     leaderboard = _run_full_recount(client)
-                    top = ", ".join(
-                        f"<@{uid}>: {c}" for uid, c in leaderboard[:5]
-                    ) or "none"
+                    top = ", ".join(f"<@{uid}>: {c}" for uid, c in leaderboard[:5]) or "none"
                     msg = f"Recount complete!\n*Top participants:* {top}"
                 except Exception as e:
-                    logger.error(f"Matchy recount failed: {e}")
+                    logger.error("Matchy recount failed: %s", e)
                     msg = f"Recount failed: {e}"
-
-                if channel_id:
-                    try:
-                        client.chat_postEphemeral(channel=channel_id, user=user_id, text=msg)
-                    except Exception:
-                        pass
+                _ephemeral(client, channel_id, user_id, msg)
 
             threading.Thread(target=_do_recount, daemon=True).start()
 
-        elif text == "leaderboard":
-            def _do_leaderboard():
-                try:
-                    leaderboard = _run_incremental_count(client)
-                    blocks = _build_leaderboard_blocks(leaderboard)
-                    client.chat_postEphemeral(
-                        channel=channel_id,
-                        user=user_id,
-                        text="Matchy Participation Leaderboard",
-                        blocks=blocks,
-                    )
-                except Exception as e:
-                    logger.error(f"Matchy leaderboard failed: {e}")
-
-            threading.Thread(target=_do_leaderboard, daemon=True).start()
-
         else:
-            client.chat_postEphemeral(
-                channel=channel_id,
-                user=user_id,
-                text=(
-                    "*Matchy commands:*\n"
-                    "• `/matchycount leaderboard` — view the participation leaderboard\n"
-                    "• `/matchycount edit` — edit a user's participation count _(admin only)_\n"
-                    "• `/matchycount recount` — full history recount _(admin only)_"
-                ),
+            _ephemeral(
+                client, channel_id, user_id,
+                "*Matchy count commands (admin):*\n"
+                "• `/matchy count edit`\n"
+                "• `/matchy count recount`",
             )
+
+    def _open_count_edit_modal(body, client, logger):
+        trigger_id = body.get("trigger_id")
+        if not trigger_id:
+            logger.error("Missing trigger_id in matchy edit payload")
+            return
+        client.views_open(trigger_id=trigger_id, view={
+            "type": "modal",
+            "callback_id": "matchy_edit_modal",
+            "title": {"type": "plain_text", "text": "Edit Participation Count"},
+            "submit": {"type": "plain_text", "text": "Save"},
+            "blocks": [
+                {
+                    "type": "input",
+                    "dispatch_action": True,
+                    "block_id": "user_block",
+                    "element": {
+                        "type": "users_select",
+                        "action_id": "matchy_user_select",
+                        "placeholder": {"type": "plain_text", "text": "Select a user"},
+                    },
+                    "label": {"type": "plain_text", "text": "User"},
+                },
+                {
+                    "type": "section",
+                    "block_id": "current_count_display",
+                    "text": {"type": "mrkdwn", "text": "*Current count:* _Select a user above_"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "count_block",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "matchy_count_input",
+                        "placeholder": {"type": "plain_text", "text": "Enter new count"},
+                        "initial_value": "",
+                    },
+                    "label": {"type": "plain_text", "text": "New count"},
+                },
+            ],
+        })
 
     @app.action("matchy_user_select")
     def handle_matchy_user_select(ack, body, client):
-        """When admin selects a user, fetch current count and pre-fill the input."""
         ack()
         view = body.get("view")
         if not view:
             return
-
         actions = body.get("actions", [])
         action = actions[0] if actions else {}
         selected_user = action.get("selected_user")
         if not selected_user:
             return
-
         count_value = str(_get_user_count(selected_user))
-
         client.views_update(
             view_id=view["id"],
             hash=view.get("hash"),
@@ -440,21 +511,16 @@ def register_matchy_handlers(app):
         user_id = body["user"]["id"]
         if not _check_admin(user_id):
             return
-
         values = view["state"]["values"]
         target_user = values.get("user_block", {}).get("matchy_user_select", {}).get("selected_user")
         count_raw = (values.get("count_block", {}).get("matchy_count_input", {}).get("value") or "").strip()
-
         if not target_user:
             return
-
         try:
             new_count = max(0, int(count_raw))
         except ValueError:
             new_count = 0
-
         _set_user_count(target_user, new_count)
-
         channel_id = body.get("channel") or body.get("container", {}).get("channel_id")
         if channel_id:
             client.chat_postEphemeral(
@@ -463,4 +529,5 @@ def register_matchy_handlers(app):
                 text=f"Updated <@{target_user}>'s participation count to {new_count}.",
             )
 
-    threading.Thread(target=_scheduler_loop, daemon=True).start()
+    threading.Thread(target=_participation_catchup_loop, daemon=True).start()
+    threading.Thread(target=_weekly_matchy_scheduler_loop, daemon=True).start()

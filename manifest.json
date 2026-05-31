@@ -17,13 +17,13 @@
         "usage_hint": "edit | recount | leaderboard"
       },
       {
-        "command": "/matchycount",
-        "description": "Track Matchy participation",
-        "usage_hint": "leaderboard | edit | recount"
+        "command": "/matchy",
+        "description": "Weekly Matchy meetups and participation",
+        "usage_hint": "help | list | leaderboard"
       }
     ]
   },
-  "oauth_config": {"scopes": {"bot": ["channels:history", "channels:join", "channels:read", "chat:write", "files:read", "im:history", "users:read"]}},
+  "oauth_config": {"scopes": {"bot": ["channels:history", "channels:join", "channels:read", "chat:write", "files:read", "im:history", "im:write", "mpim:write", "users:read"]}},
   "settings": {
     "event_subscriptions": {"bot_events": ["message.channels", "message.im", "member_joined_channel"]},
     "interactivity": {"is_enabled": true},

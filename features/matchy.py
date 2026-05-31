@@ -2,7 +2,8 @@
 CTC Matchy: weekly pairing bot.
 
 Slash command is MATCHY_COMMAND in matchy_core (currently /matchytest for testing).
-Leaderboard reads matchyData/members in Firestore (matchyCount per weekly meetup).
+Leaderboard = verified channel participation (posts / @mentions in Matchy channel).
+Roster & pairing = matchyData/members in Firestore.
 
 Scheduled: Mondays 5:00 PM America/Los_Angeles.
 """
@@ -24,11 +25,12 @@ from features.matchy_core import (
     toggle_pause,
     toggle_user_matchy,
 )
-from features.matchy_store import (
-    build_leaderboard,
-    get_member_matchy_count,
-    recount_matchy_counts,
-    set_member_matchy_count,
+from features.matchy_participation import (
+    get_participation_count,
+    run_full_recount,
+    run_incremental_count,
+    set_user_count,
+    startup_catchup,
 )
 
 MATCHY_CHANNEL_ID = os.environ.get("MATCHY_CHANNEL_ID", "C01FL4VCE1Z")
@@ -42,19 +44,25 @@ ADMIN_USER_IDS = frozenset({
 })
 
 
-def _build_leaderboard_blocks(rows: list[tuple[str, int, str]]) -> list:
+def _build_leaderboard_blocks(leaderboard: list[tuple[str, int]]) -> list:
     blocks = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": "Matchy Leaderboard", "emoji": True},
+            "text": {"type": "plain_text", "text": "Matchy Participation Leaderboard", "emoji": True},
         },
-        {"type": "section", "text": {"type": "mrkdwn", "text": "*Most weekly meetups* _(from Firestore)_"}},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "*Verified activity* — messages sent or @mentions in the Matchy channel",
+            },
+        },
     ]
-    if rows:
-        lines = [f"{i + 1}. <@{uid}> — {count}" for i, (uid, count, _) in enumerate(rows[:10])]
+    if leaderboard:
+        lines = [f"{i + 1}. <@{uid}> — {count}" for i, (uid, count) in enumerate(leaderboard[:10])]
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}})
     else:
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "_No meetups counted yet!_"}})
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "_No participations yet!_"}})
     return blocks
 
 
@@ -65,11 +73,11 @@ def _help_text() -> str:
         f"• `{c}` — join or leave weekly Matchy meetups\n"
         f"• `{c} help` — show this message\n"
         f"• `{c} list` — member roster summary\n"
-        f"• `{c} leaderboard` — meetup count leaderboard _(Firestore)_\n"
+        f"• `{c} leaderboard` — meetup count leaderboard \n"
         f"• `{c} pause` — pause or resume scheduled generation _(admin)_\n"
         f"• `{c} skip` — skip the next scheduled run once _(admin)_\n"
-        f"• `{c} count edit` — edit a user's meetup count _(admin)_\n"
-        f"• `{c} count recount` — backfill counts from match history _(admin)_"
+        f"• `{c} count edit` — edit verified participation count _(admin)_\n"
+        f"• `{c} count recount` — recount from channel history _(admin)_"
     )
 
 
@@ -160,17 +168,19 @@ def register_matchy_handlers(app):
             msg = set_match_override(parse_override_user_ids(rest, client))
             _ephemeral(client, channel_id, user_id, msg)
         elif sub == "leaderboard":
-            try:
-                rows = build_leaderboard()
-                blocks = _build_leaderboard_blocks(rows)
-                _ephemeral(
-                    client, channel_id, user_id,
-                    "Matchy Leaderboard",
-                    blocks=blocks,
-                )
-            except Exception as e:
-                logger.error("Matchy leaderboard failed: %s", e)
-                _ephemeral(client, channel_id, user_id, f"Leaderboard failed: {e}")
+            def _do_leaderboard():
+                try:
+                    leaderboard = run_incremental_count(client)
+                    blocks = _build_leaderboard_blocks(leaderboard)
+                    _ephemeral(
+                        client, channel_id, user_id,
+                        "Matchy Participation Leaderboard",
+                        blocks=blocks,
+                    )
+                except Exception as e:
+                    logger.error("Matchy leaderboard failed: %s", e)
+
+            threading.Thread(target=_do_leaderboard, daemon=True).start()
         elif sub == "pause":
             if not _check_admin(user_id):
                 _ephemeral(client, channel_id, user_id, "You don't have permission to use this command.")
@@ -220,9 +230,9 @@ def register_matchy_handlers(app):
 
             def _do_recount():
                 try:
-                    rows = recount_matchy_counts()
-                    top = ", ".join(f"<@{uid}>: {c}" for uid, c, _ in rows[:5]) or "none"
-                    msg = f"Recount complete!\n*Top meetups:* {top}"
+                    leaderboard = run_full_recount(client)
+                    top = ", ".join(f"<@{uid}>: {c}" for uid, c in leaderboard[:5]) or "none"
+                    msg = f"Recount complete!\n*Top participants:* {top}"
                 except Exception as e:
                     logger.error("Matchy recount failed: %s", e)
                     msg = f"Recount failed: {e}"
@@ -246,7 +256,7 @@ def register_matchy_handlers(app):
         client.views_open(trigger_id=trigger_id, view={
             "type": "modal",
             "callback_id": "matchy_edit_modal",
-            "title": {"type": "plain_text", "text": "Edit Matchy Count"},
+            "title": {"type": "plain_text", "text": "Edit Participation Count"},
             "submit": {"type": "plain_text", "text": "Save"},
             "blocks": [
                 {
@@ -290,14 +300,14 @@ def register_matchy_handlers(app):
         selected_user = action.get("selected_user")
         if not selected_user:
             return
-        count_value = str(get_member_matchy_count(selected_user))
+        count_value = str(get_participation_count(selected_user))
         client.views_update(
             view_id=view["id"],
             hash=view.get("hash"),
             view={
                 "type": "modal",
                 "callback_id": "matchy_edit_modal",
-                "title": {"type": "plain_text", "text": "Edit Matchy Count"},
+                "title": {"type": "plain_text", "text": "Edit Participation Count"},
                 "submit": {"type": "plain_text", "text": "Save"},
                 "blocks": [
                     {
@@ -347,12 +357,14 @@ def register_matchy_handlers(app):
             new_count = max(0, int(count_raw))
         except ValueError:
             new_count = 0
-        if set_member_matchy_count(target_user, new_count):
-            msg = f"Updated <@{target_user}>'s meetup count to {new_count}."
-        else:
-            msg = f"<@{target_user}> is not in the member roster. Add them with `{MATCHY_COMMAND}` first."
+        set_user_count(target_user, new_count)
         channel_id = body.get("channel") or body.get("container", {}).get("channel_id")
         if channel_id:
-            client.chat_postEphemeral(channel=channel_id, user=user_id, text=msg)
+            client.chat_postEphemeral(
+                channel=channel_id,
+                user=user_id,
+                text=f"Updated <@{target_user}>'s verified participation count to {new_count}.",
+            )
 
+    threading.Thread(target=startup_catchup, daemon=True).start()
     threading.Thread(target=_weekly_matchy_scheduler_loop, daemon=True).start()

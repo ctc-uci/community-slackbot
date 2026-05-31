@@ -110,10 +110,8 @@
       cursor: pointer;
       font-size: 12px;
       padding: 0;
-      opacity: 0;
       white-space: nowrap;
     }
-    .sheet-table td:hover .join-btn { opacity: 1; }
     .leave-btn {
       color: #c00;
       background: none;
@@ -264,6 +262,9 @@
   </div>
 
   <div class="sheet-rides-header">Rides (include your phone #)</div>
+  <p style="text-align:center;padding:8px 16px;font-size:13px;color:#444;background:#faf8ff;border-bottom:1px solid #ddd">
+    Click <strong>+ Add Car</strong> in the Driver column to volunteer. Click <strong>+ Join</strong> in a passenger seat to ride with someone.
+  </p>
 
   <div class="sheet-table-wrap">
     <table class="sheet-table">
@@ -365,7 +366,7 @@
 </div>
 
 <script>
-const BASE = window.location.pathname.replace(/\\/$/, '');
+const BASE = window.location.pathname.replace(/\/$/, '');
 let state = {{ state | tojson }};
 
 
@@ -373,12 +374,12 @@ let state = {{ state | tojson }};
 
 function fmtDep(dep) {
   if (!dep || dep === 'TBD') return 'TBD';
-  const m = dep.match(/<!date\\^(\\d+)\\^/);
+  const m = dep.match(/<!date\^(\d+)\^/);
   if (m) {
     return new Date(parseInt(m[1]) * 1000).toLocaleString('en-US',
       { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   }
-  const t = dep.match(/^(\\d{1,2}):(\\d{2})$/);
+  const t = dep.match(/^(\d{1,2}):(\d{2})$/);
   if (t) {
     const h = parseInt(t[1]), min = t[2];
     return `${h % 12 || 12}:${min} ${h >= 12 ? 'PM' : 'AM'}`;
@@ -388,12 +389,12 @@ function fmtDep(dep) {
 
 function depToTime(dep) {
   if (!dep) return '';
-  const m = dep.match(/<!date\\^(\\d+)\\^/);
+  const m = dep.match(/<!date\^(\d+)\^/);
   if (m) {
     const d = new Date(parseInt(m[1]) * 1000);
     return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
   }
-  if (/^\\d{1,2}:\\d{2}$/.test(dep)) return dep.padStart(5, '0');
+  if (/^\d{1,2}:\d{2}$/.test(dep)) return dep.padStart(5, '0');
   return '';
 }
 
@@ -408,7 +409,7 @@ function esc(s) {
                         .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-function isUrl(s) { return /^https?:\\/\\//i.test(s); }
+function isUrl(s) { return /^https?:\/\//i.test(s); }
 
 // ── API ───────────────────────────────────────────────────────────────────────
 

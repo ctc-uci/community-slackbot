@@ -31,6 +31,18 @@ def _fmt_date_line(meta):
         return f"📅 *Date:* {date}  ·  {_fmt_time(start)}"
     return f"📅 *Date:* {date}"
 
+
+def _is_event_thread_ridesheet(meta: dict) -> bool:
+    """Event ridesheets are thread replies; parent message already has event details."""
+    return meta.get("source") == "event"
+
+
+def _slack_ridesheet_text(state: dict) -> str:
+    meta = state.get("metadata", {})
+    if _is_event_thread_ridesheet(meta):
+        return "🚗 Ridesheet"
+    return f"🚗 Ridesheet: {meta.get('title', 'Ridesheet')}"
+
 firebase_app = get_firebase_app()
 db = firestore.client(app=firebase_app)
 
@@ -129,20 +141,28 @@ def _build_ridesheet_blocks(state, channel_id, message_ts):
     meta = state.get("metadata", {})
     is_random = meta.get("mode") == "random"
 
-    blocks = [
-        {
-            "type": "header",
-            "text": {"type": "plain_text", "text": f"🚗 {meta.get('title', 'Carpool Ridesheet')}"}
-        },
-        {
-            "type": "context",
-            "elements": [
-                {"type": "mrkdwn", "text": f"📍 *Location:* {meta.get('location', 'TBD')}"},
-                {"type": "mrkdwn", "text": _fmt_date_line(meta)}
-            ]
-        },
-        {"type": "divider"}
-    ]
+    if _is_event_thread_ridesheet(meta):
+        blocks = [
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": "🚗 Ridesheet", "emoji": True},
+            }
+        ]
+    else:
+        blocks = [
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": f"🚗 {meta.get('title', 'Carpool Ridesheet')}"},
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": f"📍 *Location:* {meta.get('location', 'TBD')}"},
+                    {"type": "mrkdwn", "text": _fmt_date_line(meta)},
+                ],
+            },
+            {"type": "divider"},
+        ]
 
     if is_random:
         blocks.append({
@@ -227,15 +247,20 @@ def refresh_ridesheet_message(channel_id, message_ts):
     if not state:
         return
     blocks = _build_ridesheet_blocks(state, channel_id, message_ts)
-    title = state.get("metadata", {}).get("title", "Ridesheet")
     try:
-        client.chat_update(channel=channel_id, ts=message_ts, text=f"🚗 Ridesheet: {title}", blocks=blocks)
+        client.chat_update(
+            channel=channel_id,
+            ts=message_ts,
+            text=_slack_ridesheet_text(state),
+            blocks=blocks,
+        )
     except Exception as e:
         print(f"Failed to refresh ridesheet Slack message: {e}")
 
 def create_ridesheet_for_event(client, channel_id, thread_ts, title, location, date_str, start_time_str, end_time_str, mode="normal"):
     """Post a ridesheet as a thread reply to an event message."""
     meta = {
+        "source": "event",
         "title": title,
         "location": location or "TBD",
         "start_date": date_str,
@@ -248,11 +273,12 @@ def create_ridesheet_for_event(client, channel_id, thread_ts, title, location, d
         "pinned": False,
     }
     state = {"metadata": meta, "cars": {}}
+    slack_text = _slack_ridesheet_text(state)
 
     res = client.chat_postMessage(
         channel=channel_id,
         thread_ts=thread_ts,
-        text=f"🚗 Ridesheet: {title}",
+        text=slack_text,
         blocks=_build_ridesheet_blocks(state, channel_id, ""),
     )
     ts = res["ts"]
@@ -262,7 +288,7 @@ def create_ridesheet_for_event(client, channel_id, thread_ts, title, location, d
     client.chat_update(
         channel=channel_id,
         ts=ts,
-        text=f"🚗 Ridesheet: {title}",
+        text=slack_text,
         blocks=_build_ridesheet_blocks(state, channel_id, ts),
     )
     return ts

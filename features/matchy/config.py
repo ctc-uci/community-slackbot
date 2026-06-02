@@ -2,8 +2,7 @@
 import os
 from zoneinfo import ZoneInfo
 
-# Switch to "/matchy" when ready for production.
-COMMAND = "/matchytest"
+COMMAND = "/matchy"
 
 CHANNEL_ID = os.environ.get("MATCHY_CHANNEL_ID", "C01FL4VCE1Z")
 TIMEZONE = ZoneInfo("America/Los_Angeles")

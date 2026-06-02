@@ -17,8 +17,8 @@
         "usage_hint": "edit | recount | leaderboard"
       },
       {
-        "command": "/matchytest",
-        "description": "Matchy meetups (test)",
+        "command": "/matchy",
+        "description": "Matchy weekly meetups",
         "usage_hint": "help | list | leaderboard"
       }
     ]

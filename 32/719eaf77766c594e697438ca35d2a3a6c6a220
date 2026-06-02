@@ -1,0 +1,26 @@
+features/matchy_core.py
+  s_109fc68f3cb13c::t_06a629c4768647 372,375-376
+  s_109fc68f3cb13c::t_e5c95be48a8c85 317
+  s_109fc68f3cb13c::t_bd6782a048e2fa 179,183
+  s_109fc68f3cb13c::t_bff4d96a67e641 398
+  s_109fc68f3cb13c::t_e434ed5acbd2ad 45-72
+  s_109fc68f3cb13c::t_17e134dddc4404 190,194
+  s_109fc68f3cb13c::t_20a779d8632b27 225,230
+  s_109fc68f3cb13c::t_de037cf35563b9 112,119-121,127,144,153-159,161
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "32719eaf77766c594e697438ca35d2a3a6c6a220",
+  "prompts": {},
+  "sessions": {
+    "s_109fc68f3cb13c": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "8d33a36c-936f-4924-bae6-db37dae44503",
+        "model": "composer-2.5"
+      },
+      "human_author": "Brendan Lieu <brendanlieu05@gmail.com>"
+    }
+  }
+}

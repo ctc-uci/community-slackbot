@@ -42,6 +42,34 @@ def _name_for(slack_id: str, members: list) -> str:
     return slack_id
 
 
+def _unique_preserve_order(ids: list) -> list:
+    seen = set()
+    out = []
+    for uid in ids:
+        if uid and uid not in seen:
+            seen.add(uid)
+            out.append(uid)
+    return out
+
+
+def sanitize_match_groups(matches: list) -> list:
+    """One slack ID per group, at most one group per person."""
+    cleaned = []
+    used_global = set()
+    for group in matches:
+        if not isinstance(group, list):
+            continue
+        unique = _unique_preserve_order(group)
+        filtered = [uid for uid in unique if uid not in used_global]
+        for uid in filtered:
+            used_global.add(uid)
+        if len(filtered) >= 2:
+            cleaned.append(filtered)
+        elif len(filtered) == 1:
+            cleaned.append(filtered)
+    return cleaned
+
+
 def valid_pairing(member1: str, member2: str, previous_matches: dict) -> bool:
     m1_prev = previous_matches.get(member1) or []
     m2_prev = previous_matches.get(member2) or []
@@ -81,20 +109,22 @@ def ensure_no_single_groups(matches: list, previous_matches: dict, allow_repeats
                 can_join = allow_repeats or all(
                     valid_pairing(m, single, previous_matches) for m in group
                 )
-                if can_join:
+                if can_join and single not in group:
                     group.append(single)
                     merged = True
                     break
 
         if not merged and singles:
             another = singles.pop(0)
-            if allow_repeats or valid_pairing(single, another, previous_matches):
+            if single == another:
+                singles.insert(0, another)
+            elif allow_repeats or valid_pairing(single, another, previous_matches):
                 result.append([single, another])
                 merged = True
             else:
                 singles.insert(0, another)
                 for i, group in enumerate(result):
-                    if len(group) == 3:
+                    if len(group) == 3 and single not in group and another not in group:
                         for j in range(3):
                             m1, m2, m3 = group[j], group[(j + 1) % 3], group[(j + 2) % 3]
                             if (
@@ -111,7 +141,7 @@ def ensure_no_single_groups(matches: list, previous_matches: dict, allow_repeats
 
         if not merged and allow_repeats:
             for group in result:
-                if len(group) < 3:
+                if len(group) < 3 and single not in group:
                     group.append(single)
                     merged = True
                     break
@@ -120,14 +150,15 @@ def ensure_no_single_groups(matches: list, previous_matches: dict, allow_repeats
             largest_idx = max(range(len(result)), key=lambda i: len(result[i]), default=-1)
             if largest_idx >= 0 and len(result[largest_idx]) >= 2:
                 group = result[largest_idx]
-                result[largest_idx] = [group[0], single]
-                if len(group) > 2:
-                    result.append([group[1], *group[2:]])
-                else:
-                    result.append([group[1]])
-                merged = True
+                if single not in group:
+                    result[largest_idx] = [group[0], single]
+                    if len(group) > 2:
+                        result.append([group[1], *group[2:]])
+                    else:
+                        result.append([group[1]])
+                    merged = True
 
-        if not merged and result:
+        if not merged and result and single not in result[0]:
             result[0].append(single)
             merged = True
         elif not merged:
@@ -145,21 +176,22 @@ def ensure_no_single_groups(matches: list, previous_matches: dict, allow_repeats
         single = remaining.pop(0)
         merged = False
         for group in final:
-            if len(group) == 2:
+            if len(group) == 2 and single not in group:
                 group.append(single)
                 merged = True
                 break
-        if not merged and final:
+        if not merged and final and single not in final[0]:
             final[0].append(single)
         elif not merged and remaining:
             final.append([single, remaining.pop(0)])
         elif not merged:
             final.append([single])
 
-    return final
+    return sanitize_match_groups(final)
 
 
 def get_matches(members: list, previous_matches: dict) -> list:
+    members = list(dict.fromkeys(members))
     matches = []
     used = set()
     allow_repeats = all_combinations_exhausted(members, previous_matches)
@@ -190,12 +222,12 @@ def get_matches(members: list, previous_matches: dict) -> list:
                 can_join = allow_repeats or all(
                     valid_pairing(m, candidate, previous_matches) for m in current
                 )
-                if can_join:
+                if can_join and candidate not in current:
                     current.append(candidate)
                     used.add(candidate)
             attempts += 1
 
-        matches.append(current)
+        matches.append(_unique_preserve_order(current))
         i += 1
 
     return ensure_no_single_groups(matches, previous_matches, allow_repeats)
@@ -282,6 +314,7 @@ def create_group_chats(
     respond: Callable[[str], None],
     allow_repeats: bool,
 ) -> bool:
+    matches = sanitize_match_groups(matches)
     validation = validate_match_assignments(matches, members_data)
     if not validation["ok"]:
         logger.error("[Matchy] validateMatchAssignments failed: %s", validation["message"])
@@ -336,11 +369,11 @@ def generate_matches(client: WebClient, respond: Callable[[str], None]) -> None:
             respond("⏸️ Matchy generation skipped this week.")
             return
 
-        members = [
+        members = list(dict.fromkeys(
             m["slackId"]
             for m in (members_data.get("members") or [])
-            if m.get("matchyEnabled")
-        ]
+            if m.get("slackId") and m.get("matchyEnabled")
+        ))
         previous_matches = members_data.get("previousMatches") or {}
         overrides = members_data.get("nextMatchOverrides") or []
 
@@ -362,7 +395,7 @@ def generate_matches(client: WebClient, respond: Callable[[str], None]) -> None:
             return
 
         current = get_matches(available_members, previous_matches)
-        all_matches = forced + current
+        all_matches = sanitize_match_groups(forced + current)
         allow_repeats = all_combinations_exhausted(members, previous_matches)
 
         if not create_group_chats(client, all_matches, members_data, respond, allow_repeats):

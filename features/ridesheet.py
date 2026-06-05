@@ -404,7 +404,13 @@ def register_ridesheet_handlers(app):
         ack()
         text = body.get("text", "").strip().lower()
         ridesheet_mode = "random" if text == "random" else "normal"
-        meta = {"mode": "create", "channel_id": body.get("channel_id"), "ridesheet_mode": ridesheet_mode}
+        meta = {
+            "mode": "create",
+            "channel_id": body.get("channel_id"),
+            "ridesheet_mode": ridesheet_mode,
+            "response_url": body.get("response_url"),
+            "user_id": body.get("user_id"),
+        }
         client.views_open(
             trigger_id=body["trigger_id"],
             view=_build_ridesheet_meta_modal(meta)
@@ -449,7 +455,28 @@ def register_ridesheet_handlers(app):
         if thread_ts:
             post_kwargs["thread_ts"] = thread_ts
 
-        res = client.chat_postMessage(**post_kwargs)
+        try:
+            res = client.chat_postMessage(**post_kwargs)
+        except Exception as e:
+            response_url = meta.get("response_url")
+            user_id = meta.get("user_id")
+            if response_url:
+                import requests
+                requests.post(response_url, json={
+                    "response_type": "ephemeral",
+                    "text": "Couldn't post the ridesheet here — please invite me to this channel first (e.g. `/invite @CTC Bot`), then try again.",
+                })
+            elif user_id:
+                try:
+                    client.chat_postEphemeral(
+                        channel=channel_id,
+                        user=user_id,
+                        text="Couldn't post the ridesheet here — please invite me to this channel first, then try again.",
+                    )
+                except Exception:
+                    pass
+            print(f"Failed to post ridesheet to {channel_id}: {e}")
+            return
         ts = res["ts"]
 
         state["metadata"]["message_ts"] = ts

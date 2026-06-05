@@ -436,8 +436,14 @@ def register_ridesheet_handlers(app):
 
         channel_id = meta["channel_id"]
         thread_ts = meta.get("thread_ts")
+        new_meta["channel_id"] = channel_id
         new_meta["pinned"] = True
         state = {"metadata": new_meta, "cars": {}}
+
+        try:
+            client.conversations_join(channel=channel_id)
+        except Exception:
+            pass
 
         post_kwargs = {"channel": channel_id, "text": "🚗 Generating Ridesheet...", "blocks": _build_ridesheet_blocks(state, channel_id, "")}
         if thread_ts:
@@ -446,6 +452,7 @@ def register_ridesheet_handlers(app):
         res = client.chat_postMessage(**post_kwargs)
         ts = res["ts"]
 
+        state["metadata"]["message_ts"] = ts
         save_state(channel_id, ts, state)
 
         blocks = _build_ridesheet_blocks(state, channel_id, ts)

@@ -31,13 +31,13 @@ def run_generation(client: WebClient, respond: Callable[[str], None]) -> None:
         data = load_roster()
 
         if data.get("matchyPaused"):
-            respond("⏸️ Matchy generation is currently paused.")
+            logger.info("Matchy generation skipped: paused")
             return
 
         if data.get("skipNextMatchy"):
             data["skipNextMatchy"] = False
             save_roster(data)
-            respond("⏸️ Matchy generation skipped this week.")
+            logger.info("Matchy generation skipped: skip-next flag set")
             return
 
         all_enabled = enabled_member_ids(data)

@@ -1,0 +1,19 @@
+features/matchy/generation.py
+  s_0898e19a87307c::t_354ac2acb350b4 34,40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "7229f026b61fa710f464bf992738d5e7ba8f5c93",
+  "prompts": {},
+  "sessions": {
+    "s_0898e19a87307c": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "202465a7-f072-46b1-a0af-d0edec898d97",
+        "model": "composer-2.5"
+      },
+      "human_author": "Brendan Lieu <brendanlieu05@gmail.com>"
+    }
+  }
+}

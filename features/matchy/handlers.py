@@ -35,6 +35,7 @@ def _help_text() -> str:
         f"• `{COMMAND} help` — show this message\n"
         f"• `{COMMAND} list` — member roster summary\n"
         f"• `{COMMAND} leaderboard` — verified channel participation\n"
+        f"• `{COMMAND} count [@user]` — how many matchys you (or someone) have been on\n"
         f"• `{COMMAND} add @a, @b, @c` — opt people in to Matchy _(admin)_\n"
         f"• `{COMMAND} sync @a @b [@c]` — force a group for the next run _(admin)_\n"
         f"• `{COMMAND} generate` — run Matchy generation now _(admin)_\n"
@@ -154,12 +155,44 @@ def register_handlers(app) -> None:
 
                 threading.Thread(target=recount, daemon=True).start()
             else:
-                ephemeral(
-                    client,
-                    channel_id,
-                    user_id,
-                    f"*Matchy count (admin):*\n• `{COMMAND} count edit`\n• `{COMMAND} count recount`",
+                # `/matchy count` -> your own count; `/matchy count @user` -> theirs
+                targets, unresolved = (
+                    resolve_users(rest, client) if rest else ([user_id], [])
                 )
+                if not targets:
+                    ephemeral(
+                        client,
+                        channel_id,
+                        user_id,
+                        f"❓ Couldn't find a user for: {', '.join(unresolved) or rest}\n"
+                        f"Usage: `{COMMAND} count [@user]`"
+                        + (
+                            f"\n_Admin:_ `{COMMAND} count edit`, `{COMMAND} count recount`"
+                            if is_admin(user_id)
+                            else ""
+                        ),
+                    )
+                    return
+
+                def lookup():
+                    try:
+                        try:
+                            run_incremental(client)  # pick up any messages we missed
+                        except Exception:
+                            logger.exception("Matchy count refresh failed")
+                        lines = [
+                            f"<@{u}> has been on *{get_count(u)}* verified matchy meetup(s)."
+                            for u in targets[:10]
+                        ]
+                        if unresolved:
+                            lines.append(f"❓ Couldn't find: {', '.join(unresolved)}")
+                        msg = "\n".join(lines)
+                    except Exception as e:
+                        logger.error("Matchy count lookup failed: %s", e)
+                        msg = f"Count lookup failed: {e}"
+                    ephemeral(client, channel_id, user_id, msg)
+
+                threading.Thread(target=lookup, daemon=True).start()
             return
 
         ack()

@@ -10,6 +10,9 @@ Admin commands:
 - /spottings edit        — manually set a user's spotting or spotted count
 - /spottings recount     — full history recount (resets incremental pointer)
 - /spottings leaderboard — show the leaderboard (ephemeral)
+- /spottings stats [@user] — spotting/spotted counts, ranks and ratio (anyone)
+- /spottings add @spotter @spotted — record one spotting by hand (admin)
+- /spottings clear [confirm] — delete all counts and start fresh from now (admin)
 
 Cooldown: same (spotter, spotted) pair within 30s counts once.
 Same person tagged twice in one message counts once (set deduplication).
@@ -32,13 +35,9 @@ from firebase_admin import firestore
 SPOTTINGS_CHANNEL_ID = os.environ.get("SPOTTINGS_CHANNEL_ID", "")
 TIMEZONE = pytz.timezone(os.environ.get("TZ", "America/Los_Angeles"))
 
-# User IDs allowed to use admin commands
-ADMIN_USER_IDS = frozenset({
-    "U0631Q51G04",
-    "U07T20PN1GB",
-    "U063K9AG40Y",
-    "U07T4JEEUSG",
-})
+# Admins are shared across all features; edit /admins.py.
+from admins import ADMIN_USER_IDS  # noqa: E402,F401
+from slack_users import resolve_users  # noqa: E402
 
 # Regex to extract user IDs from Slack message text: <@U123> or <@U123|display>
 MENTION_PATTERN = re.compile(r"<@(U[A-Z0-9]+)(?:\|[^>]*)?>")
@@ -85,6 +84,47 @@ def _set_user_count(user_id: str, count_type: str, value: int) -> None:
         doc_ref.set(counts)
 
 
+def _add_manual_spotting(spotter: str, spotted: str) -> tuple[dict, dict]:
+    """Record one spotting by hand: +1 spotting_count for spotter, +1 spotted_count for spotted.
+
+    Uses atomic increments. Returns (spotter_counts, spotted_counts) after the update.
+    Note: a /spottings recount rebuilds from channel history and drops manual additions.
+    """
+    db = _get_firestore()
+    db.collection(FIRESTORE_COLLECTION).document(spotter).set(
+        {"spotting_count": firestore.Increment(1)}, merge=True
+    )
+    db.collection(FIRESTORE_COLLECTION).document(spotted).set(
+        {"spotted_count": firestore.Increment(1)}, merge=True
+    )
+    return _get_user_counts(spotter), _get_user_counts(spotted)
+
+
+def _format_ratio(spotting: int, spotted: int) -> str:
+    """spotting : spotted ratio as text, e.g. '2.00' (spotting ÷ spotted)."""
+    if spotted == 0:
+        return "—" if spotting == 0 else "∞ (never spotted)"
+    return f"{spotting / spotted:.2f}"
+
+
+def _format_stats(uid: str, counts: dict, spotting_lb: list, spotted_lb: list) -> str:
+    spotting = counts.get("spotting_count", 0)
+    spotted = counts.get("spotted_count", 0)
+
+    def rank(lb: list) -> str:
+        for i, (u, _) in enumerate(lb):
+            if u == uid:
+                return f"#{i + 1} of {len(lb)}"
+        return "unranked"
+
+    return (
+        f"*<@{uid}>*\n"
+        f"• Spottings (they spotted others): *{spotting}* — {rank(spotting_lb)}\n"
+        f"• Spotted (others spotted them): *{spotted}* — {rank(spotted_lb)}\n"
+        f"• Ratio (spotting ÷ spotted): *{_format_ratio(spotting, spotted)}*"
+    )
+
+
 def _get_last_processed_ts() -> float:
     """Return the Unix timestamp of the last processed message (0.0 if never run)."""
     db = _get_firestore()
@@ -100,6 +140,43 @@ def _set_last_processed_ts(ts: float) -> None:
     db.collection(SPOTTINGS_META_COLLECTION).document(SPOTTINGS_META_DOC).set(
         {"last_processed_ts": ts}, merge=True
     )
+
+
+def _get_counting_start_ts() -> float:
+    """Messages at or before this Unix time are ignored by counts/recounts (0.0 = no cutoff)."""
+    db = _get_firestore()
+    doc = db.collection(SPOTTINGS_META_COLLECTION).document(SPOTTINGS_META_DOC).get()
+    if doc.exists:
+        return float((doc.to_dict() or {}).get("counting_start_ts", 0.0))
+    return 0.0
+
+
+def _clear_all_spottings() -> int:
+    """Delete every user's spotting counts and start counting fresh from now.
+
+    Also stores a cutoff so a later /spottings recount doesn't resurrect the old history.
+    Returns the number of user records deleted.
+    """
+    db = _get_firestore()
+    deleted = 0
+    batch = db.batch()
+    pending = 0
+    for doc in db.collection(FIRESTORE_COLLECTION).stream():
+        batch.delete(doc.reference)
+        pending += 1
+        deleted += 1
+        if pending >= 400:  # Firestore batch limit is 500 ops
+            batch.commit()
+            batch = db.batch()
+            pending = 0
+    if pending:
+        batch.commit()
+
+    now = time.time()
+    db.collection(SPOTTINGS_META_COLLECTION).document(SPOTTINGS_META_DOC).set(
+        {"last_processed_ts": now, "counting_start_ts": now}, merge=True
+    )
+    return deleted
 
 
 def _build_leaderboard_from_firebase() -> tuple[list, list]:
@@ -271,7 +348,11 @@ def _run_full_recount(client: WebClient) -> tuple[list, list]:
     if not channel_id:
         return [], []
 
-    messages = _fetch_channel_messages(client, channel_id)
+    # Respect the cutoff left by /spottings clear so old history isn't resurrected.
+    start_ts = _get_counting_start_ts()
+    messages = _fetch_channel_messages(
+        client, channel_id, oldest=start_ts + 1e-6 if start_ts > 0 else 0.0
+    )
     spotting_counts, spotted_counts = _compute_counts_from_messages(messages)
 
     db = _get_firestore()
@@ -476,8 +557,20 @@ def register_spottings_handlers(app):
     @app.command("/spottings")
     def cmd_spottings(ack, body, client, logger):
         """Admin command: /spottings edit | recount"""
-        text = (body.get("text") or "").strip().lower()
+        raw_text = (body.get("text") or "").strip()
+        text = raw_text.lower()
+        command, _, args = raw_text.partition(" ")
+        command = command.lower()
+        args = args.strip()
         user_id = body["user_id"]
+
+        def _say(msg: str) -> None:
+            channel = body.get("channel_id", "")
+            if channel:
+                try:
+                    client.chat_postEphemeral(channel=channel, user=user_id, text=msg)
+                except Exception:
+                    logger.exception("Spottings reply failed")
 
         if text == "edit":
             _open_edit_modal(ack, body, client, "spotting", "Edit Spotting Count", logger)
@@ -535,6 +628,89 @@ def register_spottings_handlers(app):
                     logger.error(f"Leaderboard failed: {e}")
 
             threading.Thread(target=_do_leaderboard, daemon=True).start()
+        elif command in ("stats", "count"):
+            def _do_stats():
+                try:
+                    targets, unresolved = (
+                        resolve_users(args, client) if args else ([user_id], [])
+                    )
+                    if not targets:
+                        _say(
+                            f"❓ Couldn't find a user for: {', '.join(unresolved) or args}\n"
+                            "Usage: `/spottings stats [@user]`"
+                        )
+                        return
+                    try:
+                        spotting_lb, spotted_lb = _run_incremental_count(client)
+                    except Exception:
+                        logger.exception("Spottings stats refresh failed")
+                        spotting_lb, spotted_lb = _build_leaderboard_from_firebase()
+                    parts = [
+                        _format_stats(u, _get_user_counts(u), spotting_lb, spotted_lb)
+                        for u in targets[:10]
+                    ]
+                    if unresolved:
+                        parts.append(f"❓ Couldn't find: {', '.join(unresolved)}")
+                    _say("\n\n".join(parts))
+                except Exception as e:
+                    logger.error(f"Spottings stats failed: {e}")
+                    _say(f"Stats lookup failed: {e}")
+
+            threading.Thread(target=_do_stats, daemon=True).start()
+        elif command == "clear":
+            if not _check_admin(user_id):
+                _say("You don't have permission to use this command.")
+                return
+            if args.lower() != "confirm":
+                _say(
+                    "⚠️ This permanently deletes *everyone's* spotting and spotted counts "
+                    "and starts counting fresh from now. It can't be undone.\n"
+                    "Run `/spottings clear confirm` to proceed."
+                )
+                return
+
+            def _do_clear():
+                try:
+                    n = _clear_all_spottings()
+                    logger.warning(f"Spottings cleared by {user_id}: {n} records deleted")
+                    _say(
+                        f"🧹 Cleared spottings for {n} user(s). Counting starts fresh from now; "
+                        "older channel messages will be ignored, even by `/spottings recount`."
+                    )
+                except Exception as e:
+                    logger.error(f"Spottings clear failed: {e}")
+                    _say(f"Clear failed: {e}")
+
+            threading.Thread(target=_do_clear, daemon=True).start()
+        elif command == "add":
+            if not _check_admin(user_id):
+                _say("You don't have permission to use this command.")
+                return
+            usage = "Usage: `/spottings add @spotter @spotted` (spotter first)"
+
+            def _do_add():
+                try:
+                    ids, unresolved = resolve_users(args, client)
+                    if unresolved:
+                        _say(f"❓ Couldn't find: {', '.join(unresolved)}\n{usage}")
+                        return
+                    if len(ids) != 2:
+                        _say(f"❌ Need exactly two different people.\n{usage}")
+                        return
+                    spotter, spotted = ids
+                    sc, dc = _add_manual_spotting(spotter, spotted)
+                    _say(
+                        f"✅ Recorded: <@{spotter}> spotted <@{spotted}>\n"
+                        f"• <@{spotter}> now has {sc.get('spotting_count', 0)} spotting(s)\n"
+                        f"• <@{spotted}> has now been spotted {dc.get('spotted_count', 0)} time(s)\n"
+                        "_Wrong way round? Use `/spottings edit` to correct it. "
+                        "A full `/spottings recount` rebuilds from channel history and drops manual additions._"
+                    )
+                except Exception as e:
+                    logger.error(f"Spottings add failed: {e}")
+                    _say(f"Add failed: {e}")
+
+            threading.Thread(target=_do_add, daemon=True).start()
         else:
             client.chat_postEphemeral(
                 channel=body.get("channel_id", ""),
@@ -542,6 +718,9 @@ def register_spottings_handlers(app):
                 text=(
                     "*Spottings commands:*\n"
                     "• `/spottings leaderboard` — view the spottings leaderboard\n"
+                    "• `/spottings stats [@user]` — spotting / spotted counts and ratio (yours if no user)\n"
+                    "• `/spottings add @spotter @spotted` — record one spotting by hand _(admin only)_\n"
+                    "• `/spottings clear` — reset everyone's counts and start fresh _(admin only)_\n"
                     "• `/spottings edit` — edit a user's spotting or spotted count _(admin only)_\n"
                     "• `/spottings recount` — full history recount _(admin only)_"
                 ),

@@ -7,14 +7,8 @@ COMMAND = "/matchy"
 CHANNEL_ID = os.environ.get("MATCHY_CHANNEL_ID", "C01FL4VCE1Z")
 TIMEZONE = ZoneInfo("America/Los_Angeles")
 
-ADMIN_USER_IDS = frozenset({
-    "U0631Q51G04",
-    "U07T20PN1GB",
-    "U063K9AG40Y",
-    "U07T4JEEUSG",
-    "U09N3KJ5KTN",
-    "U07T07QHQ7P",
-})
+# Admins are shared across all features; edit /admins.py.
+from admins import ADMIN_USER_IDS  # noqa: E402,F401
 
 WELCOME_MESSAGE = """🎯 *Welcome to your Matchy Meetup!*
 

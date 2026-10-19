@@ -1,16 +1,13 @@
 """Matchy roster: opt-in, admin controls, overrides."""
 import logging
-import re
 
 from slack_sdk import WebClient
 
 from features.matchy.config import COMMAND
 from features.matchy.store import load_roster, save_roster
+from slack_users import resolve_users  # noqa: F401  (re-exported for handlers)
 
 logger = logging.getLogger(__name__)
-
-MENTION_RE = re.compile(r"<@(U[A-Z0-9]+)(?:\|[^>]*)?>", re.I)
-HANDLE_RE = re.compile(r"^@?([A-Za-z0-9._-]+)$", re.I)
 
 
 def enabled_member_ids(roster: dict) -> list[str]:
@@ -89,66 +86,6 @@ def format_roster_summary() -> str:
 
 def parse_override_users(text: str, client: WebClient) -> list[str]:
     return resolve_users(text, client)[0]
-
-
-def resolve_users(text: str, client: WebClient) -> tuple[list[str], list[str]]:
-    """Resolve @mentions / handles in text to Slack IDs.
-
-    Returns (ids, unresolved) where unresolved are tokens that matched no user.
-    """
-    ids = set()
-    handles = []
-    unresolved = []
-
-    for token in text.replace(",", " ").split():
-        m = MENTION_RE.match(token)
-        if m:
-            ids.add(m.group(1).upper())
-            continue
-        h = HANDLE_RE.match(token)
-        if h:
-            handles.append(h.group(1).lower())
-        else:
-            unresolved.append(token)
-
-    if handles:
-        try:
-            users = []
-            cursor = None
-            while True:
-                kwargs = {"limit": 200}
-                if cursor:
-                    kwargs["cursor"] = cursor
-                resp = client.users_list(**kwargs)
-                users.extend(resp.get("members") or [])
-                cursor = resp.get("response_metadata", {}).get("next_cursor")
-                if not cursor:
-                    break
-
-            for handle in handles:
-                found = False
-                for user in users:
-                    if user.get("deleted") or user.get("is_bot"):
-                        continue
-                    profile = user.get("profile") or {}
-                    names = [
-                        user.get("name"),
-                        profile.get("display_name"),
-                        profile.get("display_name_normalized"),
-                        profile.get("real_name"),
-                        profile.get("real_name_normalized"),
-                    ]
-                    if handle in [n.lower() for n in names if n]:
-                        ids.add(user["id"])
-                        found = True
-                        break
-                if not found:
-                    unresolved.append(f"@{handle}")
-        except Exception:
-            logger.exception("Matchy override user lookup failed")
-            unresolved.extend(f"@{h}" for h in handles)
-
-    return list(ids), unresolved
 
 
 def add_members(client: WebClient, user_ids: list[str], unresolved: list[str]) -> str:

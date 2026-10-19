@@ -13,13 +13,13 @@
     "slash_commands": [
       {
         "command": "/spottings",
-        "description": "Manage spottings (admin only)",
-        "usage_hint": "edit | recount | leaderboard"
+        "description": "Spottings stats and leaderboard",
+        "usage_hint": "leaderboard | stats [@user] | add @spotter @spotted | edit | recount | clear"
       },
       {
         "command": "/matchy",
         "description": "Matchy weekly meetups",
-        "usage_hint": "help | list | leaderboard"
+        "usage_hint": "help | list | leaderboard | count [@user] | add @a, @b"
       }
     ]
   },

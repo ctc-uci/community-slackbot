@@ -12,6 +12,8 @@ ADMIN_USER_IDS = frozenset({
     "U07T20PN1GB",
     "U063K9AG40Y",
     "U07T4JEEUSG",
+    "U09N3KJ5KTN",
+    "U07T07QHQ7P",
 })
 
 WELCOME_MESSAGE = """🎯 *Welcome to your Matchy Meetup!*

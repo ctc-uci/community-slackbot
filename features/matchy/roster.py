@@ -88,10 +88,19 @@ def format_roster_summary() -> str:
 
 
 def parse_override_users(text: str, client: WebClient) -> list[str]:
+    return resolve_users(text, client)[0]
+
+
+def resolve_users(text: str, client: WebClient) -> tuple[list[str], list[str]]:
+    """Resolve @mentions / handles in text to Slack IDs.
+
+    Returns (ids, unresolved) where unresolved are tokens that matched no user.
+    """
     ids = set()
     handles = []
+    unresolved = []
 
-    for token in text.split():
+    for token in text.replace(",", " ").split():
         m = MENTION_RE.match(token)
         if m:
             ids.add(m.group(1).upper())
@@ -99,6 +108,8 @@ def parse_override_users(text: str, client: WebClient) -> list[str]:
         h = HANDLE_RE.match(token)
         if h:
             handles.append(h.group(1).lower())
+        else:
+            unresolved.append(token)
 
     if handles:
         try:
@@ -115,6 +126,7 @@ def parse_override_users(text: str, client: WebClient) -> list[str]:
                     break
 
             for handle in handles:
+                found = False
                 for user in users:
                     if user.get("deleted") or user.get("is_bot"):
                         continue
@@ -128,11 +140,74 @@ def parse_override_users(text: str, client: WebClient) -> list[str]:
                     ]
                     if handle in [n.lower() for n in names if n]:
                         ids.add(user["id"])
+                        found = True
                         break
+                if not found:
+                    unresolved.append(f"@{handle}")
         except Exception:
             logger.exception("Matchy override user lookup failed")
+            unresolved.extend(f"@{h}" for h in handles)
 
-    return list(ids)
+    return list(ids), unresolved
+
+
+def add_members(client: WebClient, user_ids: list[str], unresolved: list[str]) -> str:
+    """Opt the given users in (idempotent, unlike toggle_opt_in)."""
+    data = load_roster()
+    members = data.setdefault("members", [])
+    by_id = {m.get("slackId"): m for m in members}
+
+    added, re_enabled, already, failed = [], [], [], []
+    for uid in user_ids:
+        row = by_id.get(uid)
+        if row:
+            if row.get("matchyEnabled"):
+                already.append(uid)
+            else:
+                row["matchyEnabled"] = True
+                re_enabled.append(uid)
+            continue
+        try:
+            resp = client.users_info(user=uid)
+            user = (resp or {}).get("user") or {}
+            if not resp.get("ok") or user.get("is_bot") or user.get("deleted"):
+                failed.append(uid)
+                continue
+            profile = user.get("profile") or {}
+            row = {
+                "slackId": uid,
+                "name": user.get("real_name") or profile.get("display_name") or user.get("name") or "Unknown",
+                "role": "MEMBER",
+                "repos": [],
+                "github": "",
+                "rep": 0,
+                "matchyEnabled": True,
+            }
+            members.append(row)
+            by_id[uid] = row
+            added.append(uid)
+        except Exception:
+            logger.exception("Matchy add member failed for %s", uid)
+            failed.append(uid)
+
+    if added or re_enabled:
+        save_roster(data)
+
+    def fmt(ids):
+        return ", ".join(f"<@{u}>" for u in ids)
+
+    lines = []
+    if added:
+        lines.append(f"✅ Added: {fmt(added)}")
+    if re_enabled:
+        lines.append(f"✅ Re-enabled: {fmt(re_enabled)}")
+    if already:
+        lines.append(f"ℹ️ Already enabled: {fmt(already)}")
+    if failed:
+        lines.append(f"❌ Could not add: {fmt(failed)}")
+    if unresolved:
+        lines.append(f"❓ Couldn't find a user for: {', '.join(unresolved)}")
+    return "\n".join(lines) or f"❌ No users found. Usage: `{COMMAND} add @alice, @bob`"
 
 
 def schedule_override(user_ids: list[str]) -> str:

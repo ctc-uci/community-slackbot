@@ -17,8 +17,10 @@ from features.matchy.participation import (
     startup_catchup,
 )
 from features.matchy.roster import (
+    add_members,
     format_roster_summary,
     parse_override_users,
+    resolve_users,
     schedule_override,
     skip_next_run,
     toggle_opt_in,
@@ -33,6 +35,9 @@ def _help_text() -> str:
         f"• `{COMMAND} help` — show this message\n"
         f"• `{COMMAND} list` — member roster summary\n"
         f"• `{COMMAND} leaderboard` — verified channel participation\n"
+        f"• `{COMMAND} add @a, @b, @c` — opt people in to Matchy _(admin)_\n"
+        f"• `{COMMAND} sync @a @b [@c]` — force a group for the next run _(admin)_\n"
+        f"• `{COMMAND} generate` — run Matchy generation now _(admin)_\n"
         f"• `{COMMAND} pause` — pause or resume scheduled generation _(admin)_\n"
         f"• `{COMMAND} skip` — skip the next scheduled run once _(admin)_\n"
         f"• `{COMMAND} count edit` — edit participation count _(admin)_\n"
@@ -171,6 +176,12 @@ def register_handlers(app) -> None:
                 client, channel_id, user_id,
                 schedule_override(parse_override_users(rest, client)),
             )
+        elif sub == "add":
+            if not is_admin(user_id):
+                ephemeral(client, channel_id, user_id, "You don't have permission.")
+                return
+            ids, unresolved = resolve_users(rest, client)
+            ephemeral(client, channel_id, user_id, add_members(client, ids, unresolved))
         elif sub == "leaderboard":
             def board():
                 try:

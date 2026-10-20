@@ -676,7 +676,7 @@ def _poll_gmail_loop() -> None:
 
 
 # Only allow /subscribe and /unsubscribe in this channel
-GMAIL_ALLOWED_CHANNEL_ID = "C092Y1JKCMN"
+GMAIL_ALLOWED_CHANNEL_ID = os.environ.get("EMAIL_CHANNEL_ID", "").strip()
 
 
 def register_gmail_handlers(app):

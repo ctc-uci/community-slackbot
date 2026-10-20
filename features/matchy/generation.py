@@ -19,30 +19,38 @@ from features.matchy.store import load_roster, save_roster
 logger = logging.getLogger(__name__)
 
 
-def _name_for(slack_id: str, roster: list[dict]) -> str:
-    for m in roster:
-        if m.get("slackId") == slack_id:
-            return m.get("name") or slack_id
-    return slack_id
+def run_generation(
+    client: WebClient,
+    respond: Callable[[str], None],
+    *,
+    force: bool = False,
+    notify: Callable[[str], None] | None = None,
+) -> None:
+    """Create the weekly Matchy groups.
 
-
-def run_generation(client: WebClient, respond: Callable[[str], None]) -> None:
+    respond: receives the "Matchy Meetups Created" announcement.
+    notify:  receives errors / skip notices (defaults to respond). Lets a manual run post
+             the announcement publicly while keeping problems private to the admin.
+    force:   manual run — ignore the pause and skip-next flags (without consuming them).
+    """
+    notify = notify or respond
     try:
         data = load_roster()
 
-        if data.get("matchyPaused"):
-            logger.info("Matchy generation skipped: paused")
-            return
+        if not force:
+            if data.get("matchyPaused"):
+                logger.info("Matchy generation skipped: paused")
+                return
 
-        if data.get("skipNextMatchy"):
-            data["skipNextMatchy"] = False
-            save_roster(data)
-            logger.info("Matchy generation skipped: skip-next flag set")
-            return
+            if data.get("skipNextMatchy"):
+                data["skipNextMatchy"] = False
+                save_roster(data)
+                logger.info("Matchy generation skipped: skip-next flag set")
+                return
 
         all_enabled = enabled_member_ids(data)
         if len(all_enabled) < 2:
-            respond("❌ Not enough members enabled for Matchy! Need at least 2 people.")
+            notify("❌ Not enough members enabled for Matchy! Need at least 2 people.")
             return
 
         history = data.get("previousMatches") or {}
@@ -64,7 +72,7 @@ def run_generation(client: WebClient, respond: Callable[[str], None]) -> None:
         check = validate_groups(groups, roster)
         if not check.ok:
             logger.error("[Matchy] validation failed: %s", check.message)
-            respond(check.message)
+            notify(check.message)
             return
 
         viable = [g for g in groups if len(g) >= 2]
@@ -76,8 +84,7 @@ def run_generation(client: WebClient, respond: Callable[[str], None]) -> None:
                 opened = client.conversations_open(users=",".join(group))
                 if opened.get("ok"):
                     ch = opened["channel"]["id"]
-                    names = [_name_for(uid, roster) for uid in group]
-                    created.append(names)
+                    created.append(list(group))
                     client.chat_postMessage(channel=ch, text=WELCOME_MESSAGE)
             except Exception:
                 logger.exception("Matchy group DM failed for %s", group)
@@ -93,23 +100,18 @@ def run_generation(client: WebClient, respond: Callable[[str], None]) -> None:
             lines.append(
                 "🔄 *Note: Allowing repeat matches — most unique pairings are used up.*\n"
             )
-        for i, names in enumerate(created):
-            lines.append(f"{i + 1}. *Group {i + 1}:* {', '.join(names)}")
+        for i, group in enumerate(created):
+            tags = ", ".join(f"<@{uid}>" for uid in group)
+            lines.append(f"{i + 1}. *Group {i + 1}:* {tags}")
 
         if stragglers:
-            labels = ", ".join(_name_for(uid, roster) for uid in stragglers)
+            labels = ", ".join(f"<@{uid}>" for uid in stragglers)
             lines.append(
                 f"\n⚠️ *Could not place:* {labels}\n"
                 "_No group chat created for them. Use a manual sync override next run._"
             )
 
-        lines.append(
-            f"\n*Summary:*\n"
-            f"• {len(created)} group chats created\n"
-            f"• {sum(len(g) for g in viable)} people matched\n"
-            f"• Match history updated"
-        )
         respond("\n".join(lines))
     except Exception:
         logger.exception("Matchy generation failed")
-        respond("❌ Error generating matches. Check the logs for details.")
+        notify("❌ Error generating matches. Check the logs for details.")

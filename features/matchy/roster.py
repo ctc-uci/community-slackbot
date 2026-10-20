@@ -164,6 +164,45 @@ def schedule_override(user_ids: list[str]) -> str:
     return "✅ Group scheduled for the next run."
 
 
+def remove_members(user_ids: list[str], unresolved: list[str]) -> str:
+    """Opt the given users out (idempotent, unlike toggle_opt_in)."""
+    data = load_roster()
+    by_id = {m.get("slackId"): m for m in data.get("members") or []}
+
+    removed, already, not_found = [], [], []
+    for uid in user_ids:
+        row = by_id.get(uid)
+        if not row:
+            not_found.append(uid)
+        elif row.get("matchyEnabled"):
+            row["matchyEnabled"] = False
+            removed.append(uid)
+        else:
+            already.append(uid)
+
+    if removed:
+        gone = set(removed)
+        # drop pending sync groups that include anyone who just opted out
+        data["nextMatchOverrides"] = [
+            g for g in data.get("nextMatchOverrides") or [] if not gone.intersection(g)
+        ]
+        save_roster(data)
+
+    def fmt(ids):
+        return ", ".join(f"<@{u}>" for u in ids)
+
+    lines = []
+    if removed:
+        lines.append(f"✅ Removed: {fmt(removed)}")
+    if already:
+        lines.append(f"ℹ️ Already opted out: {fmt(already)}")
+    if not_found:
+        lines.append(f"ℹ️ Not in the Matchy roster: {fmt(not_found)}")
+    if unresolved:
+        lines.append(f"❓ Couldn't find a user for: {', '.join(unresolved)}")
+    return "\n".join(lines) or f"❌ No users found. Usage: `{COMMAND} remove @alice, @bob`"
+
+
 def toggle_pause() -> str:
     data = load_roster()
     data["matchyPaused"] = not data.get("matchyPaused")

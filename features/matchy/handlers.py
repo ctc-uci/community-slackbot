@@ -20,6 +20,7 @@ from features.matchy.roster import (
     add_members,
     format_roster_summary,
     parse_override_users,
+    remove_members,
     resolve_users,
     schedule_override,
     skip_next_run,
@@ -37,8 +38,9 @@ def _help_text() -> str:
         f"• `{COMMAND} leaderboard` — verified channel participation\n"
         f"• `{COMMAND} count [@user]` — how many matchys you (or someone) have been on\n"
         f"• `{COMMAND} add @a, @b, @c` — opt people in to Matchy _(admin)_\n"
+        f"• `{COMMAND} remove @a, @b, @c` — opt people out of Matchy _(admin)_\n"
         f"• `{COMMAND} sync @a @b [@c]` — force a group for the next run _(admin)_\n"
-        f"• `{COMMAND} generate` — run Matchy generation now _(admin)_\n"
+        f"• `{COMMAND} generate` — run the real Matchy generation now and post it to the channel _(admin)_\n"
         f"• `{COMMAND} pause` — pause or resume scheduled generation _(admin)_\n"
         f"• `{COMMAND} skip` — skip the next scheduled run once _(admin)_\n"
         f"• `{COMMAND} count edit` — edit participation count _(admin)_\n"
@@ -215,6 +217,12 @@ def register_handlers(app) -> None:
                 return
             ids, unresolved = resolve_users(rest, client)
             ephemeral(client, channel_id, user_id, add_members(client, ids, unresolved))
+        elif sub == "remove":
+            if not is_admin(user_id):
+                ephemeral(client, channel_id, user_id, "You don't have permission.")
+                return
+            ids, unresolved = resolve_users(rest, client)
+            ephemeral(client, channel_id, user_id, remove_members(ids, unresolved))
         elif sub == "leaderboard":
             def board():
                 try:
@@ -247,9 +255,18 @@ def register_handlers(app) -> None:
                 ephemeral(client, channel_id, user_id, "You don't have permission.")
                 return
 
+            def post_public(msg: str) -> None:
+                client.chat_postMessage(channel=CHANNEL_ID, text=msg)
+
+            def notify_admin(msg: str) -> None:
+                ephemeral(client, channel_id, user_id, msg)
+
             def gen():
+                # Same as the scheduled Monday run: real group DMs, announcement posted to
+                # the Matchy channel. Pause/skip flags are ignored for a manual run.
                 try:
-                    run_generation(client, lambda m: ephemeral(client, channel_id, user_id, m))
+                    notify_admin(f"⏳ Generating Matchy groups; the announcement will post in <#{CHANNEL_ID}>.")
+                    run_generation(client, post_public, force=True, notify=notify_admin)
                 except Exception as e:
                     logger.error("Matchy generate failed: %s", e)
                     ephemeral(client, channel_id, user_id, f"Generation failed: {e}")

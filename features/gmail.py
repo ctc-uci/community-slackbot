@@ -677,7 +677,7 @@ def _poll_gmail_loop() -> None:
 
 # Only allow /subscribe and /unsubscribe in this channel
 GMAIL_ALLOWED_CHANNEL_ID = os.environ.get("EMAIL_CHANNEL_ID", "").strip()
-
+# pushing new change should clear oauth token
 
 def register_gmail_handlers(app):
     """Register /subscribe, /unsubscribe and start Gmail polling (single inbox, subscribe by sender)."""

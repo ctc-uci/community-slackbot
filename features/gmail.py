@@ -70,8 +70,12 @@ SUBSCRIPTIONS_COLLECTION = "email_subscriptions"
 
 
 def _normalize_email(addr: str) -> str:
-    """Normalize for comparison: lowercase, strip."""
-    return (addr or "").strip().lower()
+    """Normalize for comparison: lowercase, strip, extract raw email (handles Slack mailto links)."""
+    if not addr:
+        return ""
+    addr = addr.strip().lower()
+    m = re.search(r"[\w\.\+-]+@[\w\.-]+\.\w+", addr)
+    return m.group(0) if m else addr
 
 
 def get_firestore_subscriptions():
@@ -149,9 +153,9 @@ def _get_gmail_flow(redirect_uri: str, code_verifier: str | None = None):
     return flow
 
 
-def get_gmail_oauth_authorization_url() -> tuple[str | None, str | None]:
+def get_gmail_oauth_authorization_url(force: bool = False) -> tuple[str | None, str | None]:
     """Return (authorization_url, None) for HTTP redirect, or (None, error_message). Uses callback base if set."""
-    if Path(GMAIL_TOKEN_PATH).exists():
+    if not force and (os.environ.get("GMAIL_TOKEN_JSON", "").strip() or Path(GMAIL_TOKEN_PATH).exists()):
         return (None, None)
     base = _gmail_oauth_callback_base()
     if not base:
@@ -169,7 +173,7 @@ def get_gmail_oauth_authorization_url() -> tuple[str | None, str | None]:
 
 
 def complete_gmail_oauth(callback_full_url: str) -> tuple[bool, str]:
-    """Exchange callback URL for token and save. Returns (True, "") or (False, error_message)."""
+    """Exchange callback URL for token and save. Returns (True, creds_json) or (False, error_message)."""
     base = _gmail_oauth_callback_base()
     if not base:
         return (False, "GMAIL_REDIRECT_URI or RAILWAY_PUBLIC_DOMAIN not set.")
@@ -187,12 +191,14 @@ def complete_gmail_oauth(callback_full_url: str) -> tuple[bool, str]:
         flow = _get_gmail_flow(callback_url, code_verifier=code_verifier)
         flow.fetch_token(authorization_response=callback_full_url)
         creds = flow.credentials
+        creds_json = creds.to_json()
         token_path = Path(GMAIL_TOKEN_PATH)
         token_path.parent.mkdir(parents=True, exist_ok=True)
-        token_path.write_text(creds.to_json())
+        token_path.write_text(creds_json)
         logger.info("Gmail: token saved via OAuth callback to %s", token_path)
         print(f"[Gmail] OAuth successful. Token saved. Gmail polling will start shortly.")
-        return (True, "")
+        print(f"[Gmail] To persist across Railway deploys, set GMAIL_TOKEN_JSON in Railway variables to:\n{creds_json}")
+        return (True, creds_json)
     except Exception as e:
         logger.exception("Gmail: OAuth callback exchange failed")
         return (False, str(e))
@@ -200,9 +206,16 @@ def complete_gmail_oauth(callback_full_url: str) -> tuple[bool, str]:
 
 def get_gmail_credentials():
     """Load or refresh Gmail OAuth2 credentials for the monitored inbox."""
-    token_path = Path(GMAIL_TOKEN_PATH)
     creds = None
-    if token_path.exists():
+    token_json = os.environ.get("GMAIL_TOKEN_JSON", "").strip()
+    if token_json:
+        try:
+            token_info = json.loads(token_json)
+            creds = Credentials.from_authorized_user_info(token_info, GMAIL_SCOPES)
+        except Exception as e:
+            logger.warning("Gmail: failed to parse GMAIL_TOKEN_JSON: %s", e)
+    token_path = Path(GMAIL_TOKEN_PATH)
+    if not creds and token_path.exists():
         creds = Credentials.from_authorized_user_file(str(token_path), GMAIL_SCOPES)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:

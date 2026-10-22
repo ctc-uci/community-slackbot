@@ -9,6 +9,7 @@ from slack_sdk import WebClient
 from features.matchy.config import ADMIN_USER_IDS, CHANNEL_ID, COMMAND, TIMEZONE
 from features.matchy.generation import run_generation
 from features.matchy.participation import (
+    clear_all_counts,
     get_count,
     register_events,
     run_full_recount,
@@ -44,7 +45,8 @@ def _help_text() -> str:
         f"• `{COMMAND} pause` — pause or resume scheduled generation _(admin)_\n"
         f"• `{COMMAND} skip` — skip the next scheduled run once _(admin)_\n"
         f"• `{COMMAND} count edit` — edit participation count _(admin)_\n"
-        f"• `{COMMAND} count recount` — recount from channel history _(admin)_"
+        f"• `{COMMAND} count recount` — recount from channel history _(admin)_\n"
+        f"• `{COMMAND} count clear` — reset everyone's counts and start fresh _(admin)_"
     )
 
 
@@ -156,6 +158,37 @@ def register_handlers(app) -> None:
                     ephemeral(client, channel_id, user_id, msg)
 
                 threading.Thread(target=recount, daemon=True).start()
+            elif count_sub == "clear":
+                if not is_admin(user_id):
+                    ephemeral(client, channel_id, user_id, "You don't have permission.")
+                    return
+                confirmed = rest.lower().split()[1:] == ["confirm"]
+                if not confirmed:
+                    ephemeral(
+                        client,
+                        channel_id,
+                        user_id,
+                        "⚠️ This permanently deletes *everyone's* Matchy participation counts "
+                        "and starts counting fresh from now. It can't be undone. "
+                        "(Opt-in status and past pairings are not affected.)\n"
+                        f"Run `{COMMAND} count clear confirm` to proceed.",
+                    )
+                    return
+
+                def clear():
+                    try:
+                        n = clear_all_counts()
+                        logger.warning("Matchy counts cleared by %s: %s records", user_id, n)
+                        msg = (
+                            f"🧹 Cleared Matchy counts for {n} user(s). Counting starts fresh from now; "
+                            "older channel messages will be ignored, even by a recount."
+                        )
+                    except Exception as e:
+                        logger.error("Matchy clear failed: %s", e)
+                        msg = f"Clear failed: {e}"
+                    ephemeral(client, channel_id, user_id, msg)
+
+                threading.Thread(target=clear, daemon=True).start()
             else:
                 # `/matchy count` -> your own count; `/matchy count @user` -> theirs
                 targets, unresolved = (

@@ -48,6 +48,43 @@ def _set_last_processed_ts(ts: float) -> None:
     )
 
 
+def _counting_start_ts() -> float:
+    """Messages at or before this Unix time are ignored by recounts (0.0 = no cutoff)."""
+    doc = _db().collection(META_COLLECTION).document(META_DOC).get()
+    return float((doc.to_dict() or {}).get("counting_start_ts", 0.0)) if doc.exists else 0.0
+
+
+def clear_all_counts() -> int:
+    """Delete everyone's participation count and start counting fresh from now.
+
+    Stores a cutoff so a later recount doesn't resurrect the old channel history.
+    Returns the number of count records deleted. (Match history/pairings are untouched.)
+    """
+    import time
+
+    db = _db()
+    with _lock:
+        deleted = 0
+        batch = db.batch()
+        pending = 0
+        for doc in db.collection(COUNTS_COLLECTION).stream():
+            batch.delete(doc.reference)
+            pending += 1
+            deleted += 1
+            if pending >= 400:  # Firestore batch limit is 500 ops
+                batch.commit()
+                batch = db.batch()
+                pending = 0
+        if pending:
+            batch.commit()
+
+        now = time.time()
+        db.collection(META_COLLECTION).document(META_DOC).set(
+            {"last_processed_ts": now, "counting_start_ts": now}, merge=True
+        )
+    return deleted
+
+
 def _is_thread_reply(msg: dict) -> bool:
     thread_ts = msg.get("thread_ts")
     return bool(thread_ts and str(thread_ts) != str(msg.get("ts", "")))
@@ -130,7 +167,9 @@ def run_full_recount(client: WebClient) -> tuple[list[tuple[str, int]], str]:
     if not CHANNEL_ID:
         return [], ""
 
-    messages = _fetch_messages(client)
+    # Respect the cutoff left by a "count clear" so old history isn't resurrected.
+    start_ts = _counting_start_ts()
+    messages = _fetch_messages(client, oldest=start_ts + 1e-6 if start_ts > 0 else 0.0)
     totals: dict[str, int] = defaultdict(int)
     for msg in messages:
         for uid in _counts_for_message(msg):

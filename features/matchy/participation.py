@@ -79,8 +79,9 @@ def clear_all_counts() -> int:
             batch.commit()
 
         now = time.time()
+        start_ts = now - (50 * 86400)
         db.collection(META_COLLECTION).document(META_DOC).set(
-            {"last_processed_ts": now, "counting_start_ts": now}, merge=True
+            {"last_processed_ts": start_ts, "counting_start_ts": start_ts}, merge=True
         )
     return deleted
 

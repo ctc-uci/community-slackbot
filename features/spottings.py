@@ -173,8 +173,9 @@ def _clear_all_spottings() -> int:
         batch.commit()
 
     now = time.time()
+    start_ts = now - (50 * 86400)
     db.collection(SPOTTINGS_META_COLLECTION).document(SPOTTINGS_META_DOC).set(
-        {"last_processed_ts": now, "counting_start_ts": now}, merge=True
+        {"last_processed_ts": start_ts, "counting_start_ts": start_ts}, merge=True
     )
     return deleted
 

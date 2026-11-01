@@ -32,7 +32,7 @@ from firebase_client import get_firebase_app
 from firebase_admin import firestore
 
 # CTC-spottings channel ID (set SPOTTINGS_CHANNEL_ID in .env to override)
-SPOTTINGS_CHANNEL_ID = os.environ.get("SPOTTINGS_CHANNEL_ID", "")
+SPOTTINGS_CHANNEL_ID = os.environ.get("SPOTTINGS_CHANNEL_ID", "C06TKUUNMUZ")
 TIMEZONE = pytz.timezone(os.environ.get("TZ", "America/Los_Angeles"))
 
 # Admins are shared across all features; edit /admins.py.

@@ -28,11 +28,13 @@ def run_generation(
 ) -> None:
     """Create the weekly Matchy groups.
 
-    respond: receives the "Matchy Meetups Created" announcement.
+    respond: receives the generic "new groups created, check your DMs" announcement.
+             The actual pairings are only printed to the server logs.
     notify:  receives errors / skip notices (defaults to respond). Lets a manual run post
              the announcement publicly while keeping problems private to the admin.
     force:   manual run — ignore the pause and skip-next flags (without consuming them).
     """
+    explicit_notify = notify is not None
     notify = notify or respond
     try:
         data = load_roster()
@@ -72,7 +74,13 @@ def run_generation(
         check = validate_groups(groups, roster)
         if not check.ok:
             logger.error("[Matchy] validation failed: %s", check.message)
-            notify(check.message)
+            print(f"[Matchy] Generation aborted, validation failed:\n{check.message}", flush=True)
+            # Details name people and groups, so only an admin running it manually sees them.
+            notify(
+                check.message
+                if explicit_notify
+                else "❌ Matchy generation aborted (validation error). Check the server logs."
+            )
             return
 
         viable = [g for g in groups if len(g) >= 2]
@@ -95,23 +103,33 @@ def run_generation(
         data["nextMatchOverrides"] = []
         save_roster(data)
 
-        lines = ["🎯 *Matchy Meetups Created!*\n"]
+        # Full pairings go to the server logs only (stdout, so they show in Railway).
+        # The channel just gets a generic announcement so groups aren't exposed.
+        names = {m.get("slackId"): m.get("name") or m.get("slackId") for m in roster}
+
+        def label(uid: str) -> str:
+            return f"{names.get(uid, uid)} ({uid})"
+
+        log_lines = [f"[Matchy] Generation complete: {len(created)} group(s) created"]
         if allow_repeats:
-            lines.append(
-                "🔄 *Note: Allowing repeat matches — most unique pairings are used up.*\n"
-            )
+            log_lines.append("[Matchy] Note: allowing repeat matches (most unique pairings used up)")
         for i, group in enumerate(created):
-            tags = ", ".join(f"<@{uid}>" for uid in group)
-            lines.append(f"{i + 1}. *Group {i + 1}:* {tags}")
-
+            log_lines.append(f"[Matchy] Group {i + 1}: {', '.join(label(u) for u in group)}")
         if stragglers:
-            labels = ", ".join(f"<@{uid}>" for uid in stragglers)
-            lines.append(
-                f"\n⚠️ *Could not place:* {labels}\n"
-                "_No group chat created for them. Use a manual sync override next run._"
+            log_lines.append(
+                f"[Matchy] Could not place: {', '.join(label(u) for u in stragglers)} "
+                "(no group chat created; use a sync override next run)"
+            )
+        print("\n".join(log_lines), flush=True)
+
+        if stragglers and explicit_notify:
+            # Manual run: tell the admin privately (never the channel) who was left out.
+            notify(
+                f"⚠️ Could not place: {', '.join(f'<@{u}>' for u in stragglers)}. "
+                "No group chat created for them; use `/matchy sync` next run."
             )
 
-        respond("\n".join(lines))
+        respond("🎯 *New Matchy groups created!* Check your DMs to meet your group.")
     except Exception:
         logger.exception("Matchy generation failed")
         notify("❌ Error generating matches. Check the logs for details.")

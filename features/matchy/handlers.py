@@ -1,7 +1,8 @@
 """Slack Bolt handlers for Matchy."""
+import logging
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytz
 from slack_sdk import WebClient
@@ -28,6 +29,9 @@ from features.matchy.roster import (
     toggle_opt_in,
     toggle_pause,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _help_text() -> str:
@@ -75,13 +79,23 @@ def _leaderboard_blocks(rows: list[tuple[str, int]]) -> list:
     return blocks
 
 
-def _seconds_until_monday_5pm() -> float:
-    now = datetime.now(TIMEZONE)
-    days = (0 - now.weekday()) % 7
-    target = (now + timedelta(days=days)).replace(hour=17, minute=0, second=0, microsecond=0)
-    if days == 0 and now >= target:
+def _next_monday_5pm(after: datetime) -> datetime:
+    """Next Monday 5:00pm Pacific strictly after `after`.
+
+    Uses wall-clock arithmetic in the Pacific zone, so it stays at 5pm across DST changes.
+    """
+    after = after.astimezone(TIMEZONE)
+    days = (0 - after.weekday()) % 7
+    target = (after + timedelta(days=days)).replace(hour=17, minute=0, second=0, microsecond=0)
+    if target <= after:
         target += timedelta(days=7)
-    return max((target - now).total_seconds(), 60.0)
+    return target
+
+
+def _seconds_until(target: datetime) -> float:
+    """Real elapsed seconds until target. Compares in UTC: subtracting two Pacific datetimes
+    ignores DST shifts in between, which made the old scheduler fire an hour early."""
+    return (target.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
 
 
 def _scheduler_loop() -> None:
@@ -92,8 +106,15 @@ def _scheduler_loop() -> None:
         return
     client = WebClient(token=token)
 
+    next_run = _next_monday_5pm(datetime.now(TIMEZONE))
     while True:
-        time.sleep(_seconds_until_monday_5pm())
+        remaining = _seconds_until(next_run)
+        if remaining > 0:
+            # Sleep in chunks and re-check, so DST changes, clock adjustments and sleep
+            # drift can't make us fire early.
+            time.sleep(min(remaining, 3600))
+            continue
+
         try:
             def respond(msg: str) -> None:
                 client.chat_postMessage(
@@ -103,8 +124,10 @@ def _scheduler_loop() -> None:
 
             run_generation(client, respond)
         except Exception:
-            pass
-        time.sleep(60)
+            logger.exception("Scheduled Matchy generation failed")
+
+        # Always schedule strictly after the run we just did, so it can't fire twice in a week.
+        next_run = _next_monday_5pm(next_run + timedelta(hours=1))
 
 
 def register_handlers(app) -> None:

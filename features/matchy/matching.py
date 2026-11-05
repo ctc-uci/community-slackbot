@@ -43,29 +43,23 @@ def combinations_mostly_exhausted(members: list[str], history: dict) -> bool:
 
 
 def plan_group_sizes(n: int) -> list[int]:
-    """Balanced mix of 2- and 3-person groups covering all n people."""
+    """Groups of 3 wherever possible; groups of 2 only when n isn't divisible by 3.
+
+    n % 3 == 0 -> all 3s
+    n % 3 == 2 -> 3s plus a single pair
+    n % 3 == 1 -> 3s plus two pairs (n=4 -> 2+2)
+    """
     if n <= 0:
         return []
     if n == 1:
         return [1]
 
-    best: list[int] | None = None
-    best_gap = n + 1
-
-    for threes in range(n // 3, -1, -1):
-        rem = n - 3 * threes
-        if rem < 0 or rem % 2:
-            continue
-        twos = rem // 2
-        sizes = [3] * threes + [2] * twos
-        if not sizes:
-            continue
-        gap = abs(threes - twos)
-        if gap < best_gap:
-            best_gap = gap
-            best = sizes
-
-    return best or ([2] * (n // 2) + ([1] if n % 2 else []))
+    threes, rem = divmod(n, 3)
+    if rem == 0:
+        return [3] * threes
+    if rem == 2:
+        return [3] * threes + [2]
+    return [3] * (threes - 1) + [2, 2]
 
 
 def sanitize_groups(groups: list[list[str]]) -> list[list[str]]:

@@ -24,13 +24,18 @@ def test_ensure_no_single_groups_no_duplicate_when_splitting_three_person_group(
     assert validate_match_assignments(result, {"members": []})["ok"]
 
 
-def test_plan_group_sizes_balances_twos_and_threes():
-    sizes = plan_group_sizes(33)
-    assert sum(sizes) == 33
-    twos = sum(1 for s in sizes if s == 2)
-    threes = sum(1 for s in sizes if s == 3)
-    assert abs(twos - threes) <= 1
-    assert twos >= 1 and threes >= 1
+def test_plan_group_sizes_prefers_threes_and_pairs_only_when_needed():
+    assert plan_group_sizes(0) == []
+    assert plan_group_sizes(1) == [1]
+    assert plan_group_sizes(2) == [2]
+    assert plan_group_sizes(4) == [2, 2]
+    for n in range(2, 80):
+        sizes = plan_group_sizes(n)
+        assert sum(sizes) == n
+        assert all(s in (2, 3) for s in sizes)
+        twos = sizes.count(2)
+        # pairs only when n isn't divisible by 3: one pair for n%3==2, two for n%3==1
+        assert twos == {0: 0, 2: 1, 1: 2}[n % 3]
 
 
 def test_merge_stragglers_places_solo_into_existing_pair():
